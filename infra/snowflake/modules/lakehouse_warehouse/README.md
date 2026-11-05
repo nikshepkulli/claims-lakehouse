@@ -12,3 +12,5 @@ Credentials come from `SNOWFLAKE_*` environment variables (key-pair auth);
 nothing secret is in code. Offline checks:
 `terraform fmt -check && terraform init -backend=false && terraform validate`
 and `bash infra/snowflake/tests/static_checks.sh`.
+
+`privacy.tf` is an opt-in (`manage_privacy_policies`, default false) Terraform mirror of `warehouse/snowflake/90_masking_policies.sql`; use one or the other. See [docs/privacy-and-access.md](../../../../docs/privacy-and-access.md). Not applied to a live account.

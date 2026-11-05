@@ -82,3 +82,5 @@ Variables are intentionally not renamed (renaming would break existing callers).
 | AWS-only | `max_session_duration` | - |
 
 Principal inputs differ in kind: AWS takes trusted principal ARNs that may assume the role; Azure takes object IDs that receive RBAC directly (the module also creates one managed identity per persona).
+
+How these storage controls map to HIPAA Security Rule safeguard categories, alongside masking and role controls, is in [privacy-and-access.md](privacy-and-access.md) (a mapping for discussion, not a compliance claim).

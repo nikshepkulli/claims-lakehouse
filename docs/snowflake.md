@@ -72,7 +72,7 @@ Design rules, all enforced by `tests/snowflake` and `infra/snowflake/tests/stati
 - `LOADER` can only write `RAW`. `TRANSFORMER` reads `RAW` and writes `STAGING`/`MARTS`/`SECURE`. `ANALYST` is read-only on `MARTS` and `SECURE` and cannot see `RAW` or `STAGING`.
 - Each role can use only its own warehouse, with no `OPERATE`/`MODIFY`/`MONITOR`.
 - Terraform uses three provider aliases (`SYSADMIN`, `SECURITYADMIN`, `ACCOUNTADMIN`), the documented system-role split. `ACCOUNTADMIN` is used only for what requires it. Trade-off: because a warehouse must be created by `ACCOUNTADMIN` to attach a resource monitor, the warehouses are owned by `ACCOUNTADMIN` (access is still via `USAGE` grants). Transferring ownership to `SYSADMIN` afterwards is a possible hardening step.
-- Masking and row access policies are a placeholder: `warehouse/snowflake/90_masking_policies.sql`, tracked in #25. Until #25 lands, `SECURE` holds no objects and `ANALYST` reads `MARTS` directly. All data is synthetic.
+- Masking and row access policies (#25): tag-based masking in `warehouse/snowflake/90_masking_policies.sql`, tag scripts `91`/`92` generated from `governance/data_classification.yaml`, opt-in row access example `93`. `ANALYST` reads `MARTS` through the masking policies. **Not executed against Snowflake.** Design, apply order and risks: [privacy-and-access.md](privacy-and-access.md). All data is synthetic.
 
 ## Warehouse sizing and cost guardrails
 
@@ -114,7 +114,9 @@ Run in numeric order, with the database selected by the connection (`snow sql --
 | `30_merge_dimensions.sql`, `31_merge_facts.sql` | TRANSFORMER | idempotent `MERGE` into the gold tables, dimensions first |
 | `40_reconcile.sql` | any reader | count, orphan-key, header-vs-lines and SCD2 checks (expect zero diff) |
 | `50_clustering_experiments.sql` | TRANSFORMER | clustering measurements for #16, nothing enabled by default |
-| `90_masking_policies.sql` | n/a | placeholder for #25, no executable SQL |
+| `90_masking_policies.sql` | SYSADMIN | classification tags, tag-based masking policies bound to the `PRIVACY_HANDLING` tag (#25, not executed) |
+| `91_apply_tags_gold.sql`, `92_apply_tags_marts.sql` | SYSADMIN | generated column-tag assignments from the registry; run `92` after every dbt build (#25) |
+| `93_row_access_example.sql` | SYSADMIN | opt-in row access policy by state with an entitlement table, fails closed (#25) |
 
 Table notes: `PRIMARY KEY`/`FOREIGN KEY` are informational in Snowflake (not enforced); integrity relies on the MERGE keys and the reconcile queries. Surrogate keys (`member_sk`, `provider_sk`, `diagnosis_sk`) are assigned in the Spark gold job so Delta and Snowflake agree. SCD2 versions (`effective_from`, `effective_to`, `is_current`) are also computed upstream; Snowflake upserts versions rather than computing them. Amounts are `NUMBER(12, 2)` (the raw layer is float64; see `docs/data-generator.md`).
 

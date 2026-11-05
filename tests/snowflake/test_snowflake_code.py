@@ -151,10 +151,12 @@ def test_merges_are_idempotent(name: str) -> None:
     assert not re.search(r"WHEN\s+MATCHED\s+THEN\s+DELETE", sql, re.I)
 
 
-def test_masking_placeholder_references_ticket_and_is_inert() -> None:
+def test_masking_policies_reference_ticket_and_are_unexecuted() -> None:
+    """The #14 placeholder became real policies in #25 (detailed checks: tests/governance)."""
     raw = (SQL_DIR / "90_masking_policies.sql").read_text()
     assert "#25" in raw
-    assert strip_sql_comments(raw).strip() == "", "placeholder must contain no executable SQL"
+    assert "NOT EXECUTED" in raw
+    assert re.search(r"CREATE\s+MASKING\s+POLICY", strip_sql_comments(raw), re.I)
 
 
 def test_clustering_is_not_enabled_by_default() -> None:
