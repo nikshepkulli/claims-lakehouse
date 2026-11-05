@@ -20,7 +20,7 @@ Never reuse them anywhere real.
 |---|---|---|---|---|
 | minio | Chainguard MinIO (digest-pinned) | 9000 (S3), 9001 (console) | S3-compatible lake storage | 512 MB |
 | minio-init | Chainguard mc (digest-pinned) | - | one-shot: creates `bronze`, `silver`, `gold` buckets | 128 MB |
-| redpanda | redpandadata/redpanda v24.3.11 | 19092 (Kafka), 9644 (admin) | Kafka-compatible broker | 768 MB |
+| redpanda | redpandadata/redpanda v24.3.11 | 19092 (Kafka), 18081 (schema registry), 9644 (admin) | Kafka-compatible broker | 768 MB |
 | redpanda-console | redpandadata/console v2.8.5 | 8080 | topic browser | 256 MB |
 | spark-master | apache/spark 3.5.5 (Java 17) | 8081 (UI), 7077 | Spark standalone master | 768 MB |
 | spark-worker | apache/spark 3.5.5 | 8082 (UI) | executor host, 2 cores / 1 GB | 1.5 GB |

@@ -31,6 +31,14 @@ output "abfss_uris" {
   }
 }
 
+output "layer_uris" {
+  description = "Map of layer (bronze/silver/gold) to abfss:// root URI. Same shape as the AWS module; alias of abfss_uris."
+  value = {
+    for k, c in azurerm_storage_container.layer :
+    k => "abfss://${c.name}@${azurerm_storage_account.this.name}.dfs.core.windows.net/"
+  }
+}
+
 output "principals" {
   description = "Managed identities per persona (loader, transformer, analyst)."
   value = {

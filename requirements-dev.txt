@@ -4,3 +4,7 @@ sqlfluff==3.3.0
 
 # claimsgen runtime deps (tests import them)
 -r requirements-claimsgen.txt
+PyYAML==6.0.2
+
+# streaming ingest deps (tests import them)
+-r requirements-streaming.txt

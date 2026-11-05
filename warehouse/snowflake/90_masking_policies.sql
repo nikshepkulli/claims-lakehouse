@@ -1,0 +1,19 @@
+-- PLACEHOLDER: masking and row access policies. Ticket #25 (PII tagging and
+-- access control). Nothing in this file is executed yet; it only records the
+-- intended shape so the SECURE schema and role model are designed for it.
+-- ALL DATA IS SYNTHETIC, but the controls are designed as if it were not.
+--
+-- Plan (to be implemented and tested in #25):
+--   1. Tag columns with a classification tag (e.g. pii = 'quasi_identifier'):
+--        member_id, birth_year, state, enrollment_date in dim_member.
+--   2. Masking policy on those columns that returns the real value only for
+--      the PII-reader role, a generalised value for ANALYST, e.g.
+--        birth_year -> 5-year bucket, state -> region, member_id -> hash.
+--      CREATE MASKING POLICY ... AS (val VARCHAR) RETURNS VARCHAR ->
+--          CASE WHEN IS_ROLE_IN_SESSION('<PREFIX>_<ENV>_PII_READER') THEN val
+--               ELSE SHA2(val) END;
+--   3. Expose analysts to SECURE views over MARTS, not MARTS tables, once the
+--      policies exist (ANALYST already has SELECT on SECURE via Terraform).
+--   4. A PII_READER functional role in Terraform, granted to nobody by default.
+--
+-- Do not add policies here until #25 lands with tests.

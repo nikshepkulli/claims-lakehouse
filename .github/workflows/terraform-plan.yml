@@ -1,0 +1,203 @@
+name: Terraform plan
+
+# Posts `terraform plan` as a PR comment using short-lived OIDC credentials.
+# Read-only roles. Skipped (green) until the OIDC variables are configured;
+# see docs/cd.md. Nothing here ever applies.
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform-plan.yml"
+
+# No token permissions by default; each job opts in.
+permissions: {}
+
+concurrency:
+  group: tf-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: 1.5.7
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+
+jobs:
+  not-configured:
+    name: plan skipped (OIDC not configured)
+    runs-on: ubuntu-latest
+    permissions: {}
+    if: vars.AWS_PLAN_ROLE_ARN == '' || vars.AZURE_PLAN_CLIENT_ID == ''
+    steps:
+      - name: Explain what is skipped
+        env:
+          AWS_SET: ${{ vars.AWS_PLAN_ROLE_ARN != '' }}
+          AZURE_SET: ${{ vars.AZURE_PLAN_CLIENT_ID != '' }}
+        run: |
+          echo "::notice title=Terraform plan::AWS plan configured=$AWS_SET, Azure plan configured=$AZURE_SET. Unconfigured clouds are skipped. See docs/cd.md to enable."
+          {
+            echo "### Terraform plan: not fully configured"
+            echo "- AWS (\`vars.AWS_PLAN_ROLE_ARN\`): $AWS_SET"
+            echo "- Azure (\`vars.AZURE_PLAN_CLIENT_ID\`): $AZURE_SET"
+            echo "Skipped clouds are not failures. Setup: docs/cd.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  plan-aws:
+    name: plan (aws/${{ matrix.env }})
+    # Fork PRs get no OIDC token and no repo variables, so they skip here too.
+    if: vars.AWS_PLAN_ROLE_ARN != '' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # request the GitHub OIDC token
+      contents: read
+      pull-requests: write # post the plan comment
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev]
+    env:
+      WORKDIR: infra/aws/envs/${{ matrix.env }}
+      TF_VAR_trusted_principal_arns: ${{ vars.TF_TRUSTED_PRINCIPAL_ARNS || '[]' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-session-name: gha-plan-${{ github.run_id }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Select backend
+        env:
+          STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+          AWS_REGION_V: ${{ vars.AWS_REGION || 'us-east-1' }}
+        run: |
+          # Remote state when configured; otherwise a throwaway local state
+          # (the plan then shows a full create, which is stated in the comment).
+          if [ -n "$STATE_BUCKET" ]; then
+            printf 'terraform {\n  backend "s3" {}\n}\n' > "$WORKDIR/backend_override.tf"
+            {
+              echo "TF_INIT_ARGS=-backend-config=bucket=$STATE_BUCKET -backend-config=key=claims-lakehouse/${{ matrix.env }}.tfstate -backend-config=region=$AWS_REGION_V -backend-config=dynamodb_table=$LOCK_TABLE -backend-config=encrypt=true"
+              echo "STATE_NOTE=remote state"
+            } >> "$GITHUB_ENV"
+          else
+            { echo "TF_INIT_ARGS="; echo "STATE_NOTE=NO remote state configured: plan is against empty local state"; } >> "$GITHUB_ENV"
+          fi
+      - name: terraform init
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          # shellcheck disable=SC2086 # TF_INIT_ARGS is a deliberate space-separated flag list
+          terraform init -input=false $TF_INIT_ARGS
+      - name: terraform plan
+        id: plan
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          set +e
+          terraform plan -input=false -no-color -lock-timeout=60s -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
+          code=${PIPESTATUS[0]}
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          # 0 = no changes, 2 = changes, 1 = error
+          [ "$code" -ne 1 ]
+      - name: Comment plan on PR
+        if: always() && steps.plan.outcome != 'skipped'
+        uses: actions/github-script@v7
+        env:
+          PLAN_FILE: ${{ env.WORKDIR }}/plan.txt
+          TITLE: Terraform plan (aws/${{ matrix.env }})
+          EXITCODE: ${{ steps.plan.outputs.exitcode }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- tf-plan:${process.env.TITLE} -->`;
+            let plan = fs.existsSync(process.env.PLAN_FILE) ? fs.readFileSync(process.env.PLAN_FILE, 'utf8') : '(no plan output)';
+            if (plan.length > 60000) plan = '...(truncated, see job log)...\n' + plan.slice(-60000);
+            const status = { '0': 'no changes', '2': 'changes pending', '1': 'ERROR' }[process.env.EXITCODE] || 'unknown';
+            const body = `${marker}\n### ${process.env.TITLE}: ${status}\n_${process.env.STATE_NOTE}. Plan only, nothing applied._\n\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const mine = comments.find(c => c.body && c.body.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+  plan-azure:
+    name: plan (azure/${{ matrix.env }})
+    if: vars.AZURE_PLAN_CLIENT_ID != '' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev]
+    env:
+      WORKDIR: infra/azure/envs/${{ matrix.env }}
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_PLAN_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_PLAN_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Select backend
+        env:
+          STATE_RG: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+          STATE_SA: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+          STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER || 'tfstate' }}
+        run: |
+          if [ -n "$STATE_SA" ]; then
+            printf 'terraform {\n  backend "azurerm" {}\n}\n' > "$WORKDIR/backend_override.tf"
+            {
+              echo "TF_INIT_ARGS=-backend-config=resource_group_name=$STATE_RG -backend-config=storage_account_name=$STATE_SA -backend-config=container_name=$STATE_CONTAINER -backend-config=key=claims-lakehouse/${{ matrix.env }}.tfstate -backend-config=use_azuread_auth=true -backend-config=use_oidc=true"
+              echo "STATE_NOTE=remote state"
+            } >> "$GITHUB_ENV"
+          else
+            { echo "TF_INIT_ARGS="; echo "STATE_NOTE=NO remote state configured: plan is against empty local state"; } >> "$GITHUB_ENV"
+          fi
+      - name: terraform init
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          # shellcheck disable=SC2086 # TF_INIT_ARGS is a deliberate space-separated flag list
+          terraform init -input=false $TF_INIT_ARGS
+      - name: terraform plan
+        id: plan
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          set +e
+          terraform plan -input=false -no-color -lock-timeout=60s -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
+          code=${PIPESTATUS[0]}
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          [ "$code" -ne 1 ]
+      - name: Comment plan on PR
+        if: always() && steps.plan.outcome != 'skipped'
+        uses: actions/github-script@v7
+        env:
+          PLAN_FILE: ${{ env.WORKDIR }}/plan.txt
+          TITLE: Terraform plan (azure/${{ matrix.env }})
+          EXITCODE: ${{ steps.plan.outputs.exitcode }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- tf-plan:${process.env.TITLE} -->`;
+            let plan = fs.existsSync(process.env.PLAN_FILE) ? fs.readFileSync(process.env.PLAN_FILE, 'utf8') : '(no plan output)';
+            if (plan.length > 60000) plan = '...(truncated, see job log)...\n' + plan.slice(-60000);
+            const status = { '0': 'no changes', '2': 'changes pending', '1': 'ERROR' }[process.env.EXITCODE] || 'unknown';
+            const body = `${marker}\n### ${process.env.TITLE}: ${status}\n_${process.env.STATE_NOTE}. Plan only, nothing applied._\n\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const mine = comments.find(c => c.body && c.body.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });

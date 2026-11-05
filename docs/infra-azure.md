@@ -62,7 +62,7 @@ Static analysis: the module is written to satisfy common checkov rules for `azur
 
 ## Interface differences vs AWS module
 
-Variables are intentionally not renamed here; multi-cloud ticket #20 will reconcile them (adapter or shared interface).
+Variables are intentionally not renamed (renaming would break existing callers). Ticket #20 reconciles the interfaces at the **output** side instead: both modules now emit `layer_uris` and `principals`, validated by `infra/shared/modules/lakehouse_contract`. See [multi-cloud.md](multi-cloud.md#interface-mapping).
 
 | Concern | AWS module | Azure module |
 |---|---|---|
