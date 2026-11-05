@@ -50,3 +50,12 @@ Branch protection is a repo setting, not code. Require: `python lint + format`, 
 `terraform-plan.yml` (PR plan comments) and `terraform-apply.yml` (manual, approval-gated) use OIDC and are documented in [cd.md](cd.md). Plan jobs are skipped (green) until the OIDC variables are set. They are not part of the required status checks.
 
 `dbt.yml` (path-filtered, separate from `ci.yml`) builds and tests the dbt project on DuckDB against a gold-shaped test fixture and uploads the dbt docs site as an artifact; see [dbt.md](dbt.md).
+
+## Dependabot policy
+
+`.github/dependabot.yml` groups updates weekly, with deliberate exceptions:
+
+- **pyspark / delta-spark majors are ignored**: they must match the pinned Spark Docker image used by `spark tests`. Dependabot proposed Spark 4 / Delta 4 and the Spark, lint and sqlfluff jobs failed.
+- **numpy / pyarrow majors are ignored**: they can change generator output and compaction behaviour.
+- **ruff and sqlfluff form their own group**: lint-rule changes should be reviewed alone, never mixed with runtime bumps.
+- **Deploy-path action majors are ignored** (`aws-actions/configure-aws-credentials`, `azure/login`, artifact actions): the OIDC workflows are skipped in CI until a cloud is attached, so majors there are untestable. Bump manually when exercised.
