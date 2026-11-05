@@ -1,10 +1,12 @@
 """Build a gold-shaped Parquet TEST FIXTURE from claimsgen output (ticket #15).
 
-*** TEST FIXTURE. This is NOT the lakehouse gold layer. ***
-The real gold layer (Delta, SCD2 dimensions, quarantine of bad records) is built by
-Spark in ticket #8, which is not merged yet. This script stands in for it so the dbt
-project (dbt/) can be built and tested against the gold CONTRACT, which is the
-Snowflake DDL in warehouse/snowflake/01_gold_ddl.sql. All data is synthetic.
+*** TEST FIXTURE (fallback). This is NOT the lakehouse gold layer. ***
+The real gold layer (Delta, SCD2 dimensions, reconciliation) is built by Spark in
+src/lakehouse/gold (ticket #8, docs/gold.md) and is the primary dbt source: the
+`pipeline e2e` CI job builds dbt on its Parquet export. This script remains a fast,
+Spark-free approximation so the dbt project (dbt/) can be built and tested against the
+gold CONTRACT (the Snowflake DDL in warehouse/snowflake/01_gold_ddl.sql) without Java, and
+it injects a second SCD2 version that generated gold does not have. All data is synthetic.
 
 What it does, in DuckDB SQL, to approximate silver -> gold:
   * dedupe claims, lines and diagnoses (the generator re-sends some claims);
@@ -17,10 +19,9 @@ What it does, in DuckDB SQL, to approximate silver -> gold:
     service date, so the SCD2 tests in dbt have something real to check;
   * cast every column to the exact DDL type (GOLD_SCHEMA below).
 
-Switching to the real gold once #8 lands: point GOLD_PATH at the Spark job's Parquet
-export (or the Delta files read as Parquet) laid out as <GOLD_PATH>/<table>/*.parquet and
-skip this script. tests/dbt/test_gold_contract.py keeps GOLD_SCHEMA, the DDL and the dbt
-source YAML in lockstep, so any divergence fails CI.
+Using the real gold instead: GOLD_PATH=<gold root>/export (or dbt --vars
+'{gold_path: ...}'), see docs/dbt.md. tests/dbt/test_gold_contract.py keeps GOLD_SCHEMA, the
+DDL and the dbt source YAML in lockstep, so any divergence fails CI.
 
 Usage:
     PYTHONPATH=src python -m claimsgen --rows 5000 --out data/raw

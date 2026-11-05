@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [bronze, silver]
+        suite: [bronze, silver, gold]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -63,6 +63,54 @@ jobs:
           cache-dependency-path: requirements-spark.txt
       - run: pip install -r requirements-spark.txt
       - run: pytest -m spark -p no:cacheprovider tests/${{ matrix.suite }}
+
+  pipeline-e2e:
+    # claimsgen -> bronze -> silver -> gold (Spark/Delta) -> dbt build on DuckDB, reading the REAL
+    # gold Parquet export instead of the dbt test fixture. Any failing dbt test fails the job.
+    name: pipeline e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      E2E: data/e2e
+      DATASETS: claims,claim_lines,diagnoses,members,providers,notes
+      DBT_PROFILES_DIR: dbt
+      DBT_DUCKDB_PATH: data/e2e/claims.duckdb
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-spark.txt
+            requirements-dbt.txt
+      - run: pip install -r requirements-spark.txt -r requirements-dbt.txt
+      - name: generate synthetic claims (2000 claims, seed 42)
+        run: python -m claimsgen --rows 2000 --seed 42 --out $E2E/raw --overwrite --quiet
+      - name: merge daily partitions into 3 batches (keeps Spark batch count small)
+        run: python scripts/bucket_raw_batches.py --raw $E2E/raw --out $E2E/raw_batched --batches 3
+      - name: bronze
+        run: python -m lakehouse.bronze --input $E2E/raw_batched --bronze $E2E/bronze --batch-date all --datasets $DATASETS
+      - name: silver
+        run: python -m lakehouse.silver --bronze $E2E/bronze --silver $E2E/silver --batch-date all --datasets $DATASETS
+      - name: gold (reconciliation failures exit non-zero)
+        run: python -m lakehouse.gold --silver $E2E/silver --gold $E2E/gold --batch-date all
+      - name: dbt build on the real gold export
+        run: |
+          cp dbt/profiles.yml.example dbt/profiles.yml
+          dbt deps --project-dir dbt
+          dbt build --project-dir dbt --target duckdb --vars "{gold_path: $E2E/gold/export}"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: pipeline-e2e-dbt-results
+          path: dbt/target/run_results.json
+          if-no-files-found: ignore
 
   sqlfluff:
     name: sqlfluff

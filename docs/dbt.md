@@ -3,8 +3,9 @@
 Ticket #15 (M3). Code lives in `dbt/`. All data is synthetic.
 
 > **What ran and what did not.**
-> - Runs for real, locally and in CI (`.github/workflows/dbt.yml`): `dbt deps/parse/build`, `dbt source freshness` and `dbt docs generate` on **DuckDB**, against a gold-shaped **test fixture**.
-> - The fixture (`scripts/make_gold_fixture.py`) is **not** the Spark gold layer. Gold is built by ticket #8, which is not merged yet. The dbt sources are written against the gold *contract*, the Snowflake DDL `warehouse/snowflake/01_gold_ddl.sql`, so they should work unchanged once #8 lands (see [Switching to the real gold](#switching-to-the-real-gold)).
+> - **Primary source: the real gold.** The Spark gold layer ([gold.md](gold.md), ticket #8) writes a Parquet export, and the `pipeline e2e` job in `.github/workflows/ci.yml` runs claimsgen -> bronze -> silver -> gold and then `dbt build --target duckdb` on that export (all 186 models and tests pass on it; a failing dbt test fails the job). Locally: `make gold-dbt` (reads `data/gold-delta/export`).
+> - **Fallback: a gold-shaped test fixture.** `.github/workflows/dbt.yml` (path-filtered) and `make dbt-build` still build against `scripts/make_gold_fixture.py`, a DuckDB approximation of silver -> gold. It needs no Spark and no Java, and it carries a deliberate second SCD2 version for a few members/providers (the generated gold has one version per entity). It is **not** the Spark gold; the default `gold_path` is still the fixture directory so existing jobs are unchanged. See [Switching between fixture and real gold](#switching-between-fixture-and-real-gold).
+> - Also runs for real: `dbt deps/parse/build`, `dbt source freshness` and `dbt docs generate` on **DuckDB**.
 > - **Snowflake has not been run.** There is no Snowflake account. The `snowflake` target was only checked offline with `dbt parse --target snowflake` (dbt-snowflake 1.12.5, dummy credentials), which validates YAML, refs and macros but executes no SQL. Compiled Snowflake SQL, contract data-type checks on Snowflake and the source/test queries are unproven there. A live run is the remaining checkbox on #15.
 
 ## Layers and naming
@@ -90,15 +91,19 @@ make dbt-lint      # sqlfluff for dbt/
 
 Without make: `cp dbt/profiles.yml.example dbt/profiles.yml` (git-ignored), then `dbt build --project-dir dbt --profiles-dir dbt --target duckdb` from the repo root (paths are relative to the repo root). `GOLD_PATH` (default `data/gold`) and `DBT_DUCKDB_PATH` (default `data/claims.duckdb`) override locations. `pytest tests/dbt` runs the contract tests; the DuckDB-dependent ones skip when `duckdb` is not installed, so the plain pytest job needs no dbt.
 
-## Switching to the real gold
+## Switching between fixture and real gold
 
-When #8 lands:
+The sources read `<gold_path>/<table>/*.parquet`, where `gold_path` is, in order: the dbt var `gold_path`, the env var `GOLD_PATH`, the default `data/gold` (the fixture).
 
-1. Export or point at its Parquet as `<GOLD_PATH>/<table>/*.parquet` with the six table names and the DDL column names/types. The fixture script is then not used.
-2. Run `dbt build`. `tests/dbt/test_gold_contract.py` already pins the DDL, the fixture schema and the dbt source columns together, so a rename in either direction fails CI before it reaches a model.
-3. In `.github/workflows/dbt.yml`, replace the "build gold TEST FIXTURE" step with the real gold step and drop the fixture wording in the docs.
+| Source | How to select it |
+|---|---|
+| Fixture (default, fallback) | nothing; `make dbt-data` writes `data/gold` |
+| Real Spark gold | `GOLD_PATH=<gold root>/export dbt build ...`, or `dbt build --vars '{gold_path: <gold root>/export}'`, or `make gold-dbt` |
+| Snowflake | `--target snowflake` (reads schema `MARTS`; the export is loaded by `warehouse/snowflake/20_copy_into.sql`) |
 
-The fixture's SCD2 rule (about 5% of members and 4% of providers get a second version on 2024-07-01, plan type or cost tier rotated) is a stand-in so the SCD2 tests have something to check; it does not describe how #8 will assign versions.
+The export is produced by `python -m lakehouse.gold` (see the Export section of [gold.md](gold.md)). `tests/dbt/test_gold_contract.py` pins the DDL, the fixture schema and the dbt source columns together, and `tests/gold/test_gold_ddl_contract.py` pins the Spark gold schema to the same DDL, so a rename on any side fails CI before it reaches a model.
+
+Differences you will see between the two sources, none of which are bugs: the real gold has `load_batch_id` of the form `bYYYYMMDD` (the fixture says `FIXTURE-NOT-SPARK-GOLD`); the first version of every member/provider starts at `1900-01-01`; the generated data has a single version per entity, so the SCD2 tests are exercised for versioning only by the fixture here (and by the Spark SCD2 tests in `tests/gold`); claims whose lines were quarantined in silver are held back whole, which the fixture approximates by dropping them.
 
 ## Run it on Snowflake (not yet executed)
 
@@ -124,11 +129,11 @@ Every mart column is classified in `governance/data_classification.yaml`; `mart_
 
 ## CI
 
-`.github/workflows/dbt.yml` (separate from `ci.yml`): Python 3.12, `pip install -r requirements-dbt.txt`, `pytest tests/dbt`, sqlfluff on `dbt/`, claimsgen (5,000 claims), fixture build, `dbt deps`, `parse`, `build`, `source freshness`, `docs generate`, and upload of `index.html`, `manifest.json` and `catalog.json` as the `dbt-docs` artifact. Runs on changes to the dbt project, the fixture, the DDL or claimsgen, and on pushes to `main`.
+`.github/workflows/dbt.yml` (separate from `ci.yml`, fixture build): Python 3.12, `pip install -r requirements-dbt.txt`, `pytest tests/dbt`, sqlfluff on `dbt/`, claimsgen (5,000 claims), fixture build, `dbt deps`, `parse`, `build`, `source freshness`, `docs generate`, and upload of `index.html`, `manifest.json` and `catalog.json` as the `dbt-docs` artifact. Runs on changes to the dbt project, the fixture, the DDL or claimsgen, and on pushes to `main`. The same `dbt build` on the **real** gold export runs in the `pipeline e2e` job of `ci.yml` on every pull request (no path filter).
 
 ## Decisions
 
-- **Sources are the gold contract, not Spark output.** The project is built and tested before #8 exists, and cannot drift from the Snowflake DDL unnoticed (contract test).
+- **Sources are the gold contract.** The project was built before the Spark gold existed (against the fixture) and cannot drift from the Snowflake DDL unnoticed (contract test); it now also runs on the real gold in CI.
 - **DuckDB for CI, Snowflake as the production adapter.** No cloud account or cost in CI; the SQL is kept to the subset both engines accept (no `strftime`, no engine-specific functions in models; the DuckDB-specific SQL lives only in the fixture script). The cost is that DuckDB passing does not prove Snowflake works.
 - **Fail, do not filter, in staging.** Hiding bad rows in staging would make the marts look healthy; tests that fail loudly keep the data-quality story honest.
 - **Month-grain PMPM mart.** Keeps the member-month denominator additive-safe; breakdowns live in other marts.
