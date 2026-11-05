@@ -27,4 +27,21 @@ forbid "no hardcoded access keys"      'AKIA[0-9A-Z]{16}' main.tf
 if awk '/data "aws_iam_policy_document" "(loader|transformer|analyst)"/,/^}/' "$M/main.tf" | grep -q 'resources[[:space:]]*=[[:space:]]*\["\*"\]'; then
   echo "FAIL role policies use wildcard resource"; fail=1
 else echo "ok   role policies have scoped resources"; fi
+# --- trust / fail-closed checks ---
+# Root principal may appear only in the KMS key policy (locals.root_arn + its single use).
+if [ "$(grep -c 'root_arn' "$M/main.tf")" -le 2 ]; then echo "ok   root principal only used by KMS key policy"; else echo "FAIL root principal used beyond KMS key policy"; fail=1; fi
+if awk '/data "aws_iam_policy_document" "assume"/,/^}/' "$M/main.tf" | grep -Eq 'root_arn|\?[[:space:]]*each\.value[[:space:]]*:|length\('; then
+  echo "FAIL assume-role policy has a root/empty-list fallback"; fail=1
+else echo "ok   no root-principal fallback in assume-role policy"; fi
+for r in loader transformer analyst; do
+  if awk "/variable \"${r}_trusted_principal_arns\"/,/^}/" "$M/variables.tf" | grep -Eq '^[[:space:]]*default[[:space:]]*='; then
+    echo "FAIL ${r}_trusted_principal_arns has a default"; fail=1
+  elif awk "/variable \"${r}_trusted_principal_arns\"/,/^}/" "$M/variables.tf" | grep -q 'validation'; then
+    echo "ok   ${r}_trusted_principal_arns required + validated"
+  else echo "FAIL ${r}_trusted_principal_arns lacks validation"; fail=1; fi
+done
+need "TLS deny on every bucket policy" 'DenyInsecureTransport' main.tf
+[ "$(grep -c 'aws:SecureTransport' "$M/main.tf")" -ge 2 ] && echo "ok   TLS deny in logs + data policies" || { echo "FAIL TLS deny count"; fail=1; }
+forbid "KMS rotation not disabled"     'enable_key_rotation[[:space:]]*=[[:space:]]*false' main.tf
+need "object lock is opt-in (default false)" 'gold_object_lock_enabled' main.tf
 exit $fail

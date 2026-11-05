@@ -56,21 +56,72 @@ variable "access_log_retention_days" {
 }
 
 variable "loader_trusted_principal_arns" {
-  description = "IAM principal ARNs allowed to assume the loader role (ingestion job). Empty = account root only."
+  description = "REQUIRED. IAM user or role ARNs allowed to assume the loader role (ingestion job). No default and no account-root fallback: an empty list is rejected. Do not pass assumed-role session ARNs (arn:aws:sts::...); use the role ARN."
   type        = list(string)
-  default     = []
+
+  validation {
+    condition     = length(var.loader_trusted_principal_arns) > 0 && alltrue([for a in var.loader_trusted_principal_arns : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:(user|role)/.+$", a))])
+    error_message = "loader_trusted_principal_arns must be non-empty and every item an IAM user/role ARN (arn:aws:iam::<12-digit-account>:user|role/...). Account root and sts assumed-role ARNs are rejected."
+  }
 }
 
 variable "transformer_trusted_principal_arns" {
-  description = "IAM principal ARNs allowed to assume the transformer role (dbt/Spark job). Empty = account root only."
+  description = "REQUIRED. IAM user or role ARNs allowed to assume the transformer role (dbt/Spark job). No default and no account-root fallback: an empty list is rejected. Do not pass assumed-role session ARNs (arn:aws:sts::...); use the role ARN."
   type        = list(string)
-  default     = []
+
+  validation {
+    condition     = length(var.transformer_trusted_principal_arns) > 0 && alltrue([for a in var.transformer_trusted_principal_arns : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:(user|role)/.+$", a))])
+    error_message = "transformer_trusted_principal_arns must be non-empty and every item an IAM user/role ARN (arn:aws:iam::<12-digit-account>:user|role/...). Account root and sts assumed-role ARNs are rejected."
+  }
 }
 
 variable "analyst_trusted_principal_arns" {
-  description = "IAM principal ARNs allowed to assume the analyst role (read-only gold). Empty = account root only."
+  description = "REQUIRED. IAM user or role ARNs allowed to assume the analyst role (read-only gold). No default and no account-root fallback: an empty list is rejected. Do not pass assumed-role session ARNs (arn:aws:sts::...); use the role ARN."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.analyst_trusted_principal_arns) > 0 && alltrue([for a in var.analyst_trusted_principal_arns : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:(user|role)/.+$", a))])
+    error_message = "analyst_trusted_principal_arns must be non-empty and every item an IAM user/role ARN (arn:aws:iam::<12-digit-account>:user|role/...). Account root and sts assumed-role ARNs are rejected."
+  }
+}
+
+variable "key_admin_arns" {
+  description = "Optional IAM user/role ARNs granted KMS key ADMINISTRATION (create grants, policy, rotation, schedule deletion) but not key USE (no Encrypt/Decrypt/GenerateDataKey). Key use is granted only by the role policies. The key policy still delegates to IAM via the account root (required by KMS to avoid lockout), so this separates duties by explicit statement rather than by removing delegation."
   type        = list(string)
   default     = []
+
+  validation {
+    condition     = alltrue([for a in var.key_admin_arns : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:(user|role)/.+$", a))])
+    error_message = "key_admin_arns items must be IAM user/role ARNs."
+  }
+}
+
+variable "gold_object_lock_enabled" {
+  description = "OPTIONAL hardening for regulated data: create the gold bucket with S3 Object Lock (WORM). Can only be set when the bucket is created; changing it on an existing bucket forces replacement. Default off."
+  type        = bool
+  default     = false
+}
+
+variable "gold_object_lock_mode" {
+  description = "Default Object Lock retention mode for gold when enabled: GOVERNANCE (privileged bypass) or COMPLIANCE (no one can shorten or delete)."
+  type        = string
+  default     = "GOVERNANCE"
+
+  validation {
+    condition     = contains(["GOVERNANCE", "COMPLIANCE"], var.gold_object_lock_mode)
+    error_message = "gold_object_lock_mode must be GOVERNANCE or COMPLIANCE."
+  }
+}
+
+variable "gold_object_lock_retention_days" {
+  description = "Default Object Lock retention in days for gold when enabled."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.gold_object_lock_retention_days >= 1
+    error_message = "gold_object_lock_retention_days must be >= 1."
+  }
 }
 
 variable "max_session_duration" {

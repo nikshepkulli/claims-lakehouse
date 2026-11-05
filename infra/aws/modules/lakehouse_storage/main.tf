@@ -38,6 +38,24 @@ data "aws_iam_policy_document" "kms" {
       identifiers = [local.root_arn]
     }
   }
+
+  # Optional separate key administrators: manage the key, cannot use it for data.
+  dynamic "statement" {
+    for_each = length(var.key_admin_arns) > 0 ? [1] : []
+    content {
+      sid = "KeyAdministration"
+      actions = [
+        "kms:Create*", "kms:Describe*", "kms:Enable*", "kms:List*", "kms:Put*",
+        "kms:Update*", "kms:Revoke*", "kms:Disable*", "kms:Get*", "kms:Delete*",
+        "kms:TagResource", "kms:UntagResource", "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion",
+      ]
+      resources = ["*"]
+      principals {
+        type        = "AWS"
+        identifiers = var.key_admin_arns
+      }
+    }
+  }
 }
 
 resource "aws_kms_key" "lakehouse" {
@@ -57,6 +75,7 @@ resource "aws_kms_alias" "lakehouse" {
 # Access-log bucket. S3 server access logging cannot deliver to SSE-KMS
 # buckets, so this one uses SSE-S3 (AES256) by design.
 # ---------------------------------------------------------------------------
+# checkov:skip=CKV_AWS_18:The access-log bucket is the logging target; logging it to itself (or a further bucket) is circular and adds no audit value. Use CloudTrail data events for log-bucket access.
 resource "aws_s3_bucket" "logs" {
   bucket        = local.log_bucket_name
   force_destroy = var.force_destroy
@@ -168,7 +187,9 @@ resource "aws_s3_bucket" "data" {
 
   bucket        = local.bucket_names[each.key]
   force_destroy = var.force_destroy
-  tags          = merge(local.common_tags, { Layer = each.key })
+  # Object Lock can only be enabled at bucket creation (gold only, opt-in).
+  object_lock_enabled = each.key == "gold" && var.gold_object_lock_enabled
+  tags                = merge(local.common_tags, { Layer = each.key })
 }
 
 resource "aws_s3_bucket_ownership_controls" "data" {
@@ -197,6 +218,20 @@ resource "aws_s3_bucket_versioning" "data" {
   versioning_configuration {
     status = "Enabled"
   }
+}
+
+resource "aws_s3_bucket_object_lock_configuration" "gold" {
+  count = var.gold_object_lock_enabled ? 1 : 0
+
+  bucket = aws_s3_bucket.data["gold"].id
+  rule {
+    default_retention {
+      mode = var.gold_object_lock_mode
+      days = var.gold_object_lock_retention_days
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.data]
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "data" {
@@ -318,7 +353,7 @@ data "aws_iam_policy_document" "assume" {
     actions = ["sts:AssumeRole"]
     principals {
       type        = "AWS"
-      identifiers = length(each.value) > 0 ? each.value : [local.root_arn]
+      identifiers = each.value # required + validated non-empty; never falls back to account root
     }
   }
 }

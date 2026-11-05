@@ -22,14 +22,21 @@ module "lakehouse_storage" {
   name_prefix = "claims-lakehouse-dev"
   environment = "dev"
 
+  loader_trusted_principal_arns      = ["arn:aws:iam::111122223333:role/ingest-job"]
   transformer_trusted_principal_arns = ["arn:aws:iam::111122223333:role/dbt-runner"]
+  analyst_trusted_principal_arns     = ["arn:aws:iam::111122223333:role/analyst-sso"]
 }
 ```
 
 ## Inputs
 
-See `variables.tf`. Required: `name_prefix`. Trust lists default to the account
-root, so tighten them before real use.
+See `variables.tf`. Required: `name_prefix` and the three
+`*_trusted_principal_arns` (non-empty IAM user/role ARNs; account root and
+assumed-role session ARNs are rejected; there is no root fallback). Optional:
+`key_admin_arns` (KMS administration separate from use), and
+`gold_object_lock_enabled` / `gold_object_lock_mode` /
+`gold_object_lock_retention_days` (S3 Object Lock on gold, creation-time only,
+default off).
 
 ## Outputs
 
