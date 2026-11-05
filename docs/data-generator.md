@@ -149,3 +149,5 @@ File count is flat in volume: one file per table per `ingest_date` (about 450 pa
 ## Tests
 
 `pytest tests/claimsgen` covers: byte-level determinism, seed sensitivity, manifest counts vs counts recomputed from the data for every defect, referential integrity of non-injected rows (and that orphans are exactly the injected set), header/line reconciliation, duplicates being exact re-sends, schema drift confined to one partition, partition/`received_date` agreement, cost and seasonal skew, events/notes parseability and synthetic marker, CSV/Parquet row parity, parquet-only default, compaction (one file per table/day by default, target-size splitting with identical rows/order, staging removed), event duplicates (identical, counted) and out-of-order events (counted, isolated from baseline), and a CLI smoke test.
+
+Privacy: the synthetic identifiers, `birth_year`, dates and the phone-like strings in notes are classified in `governance/data_classification.yaml` and used as the test corpus for tokenisation and note scrubbing; see [privacy-and-access.md](privacy-and-access.md).

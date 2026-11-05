@@ -1,0 +1,189 @@
+# Data-classification registry (ticket #25). SINGLE SOURCE OF TRUTH for how every column of
+# every gold table and dbt mart is classified and handled for non-privileged readers.
+# ALL DATA IN THIS REPO IS SYNTHETIC; the controls are designed as if it were not.
+#
+# Consumers:
+#   * tests/governance/test_registry.py   fails if a column exists in the Snowflake DDL
+#     (warehouse/snowflake/01_gold_ddl.sql) or a dbt mart (dbt/models/marts) but is missing
+#     here, or the registry lists a column that no longer exists. New columns cannot slip
+#     through unclassified.
+#   * src/lakehouse/governance/snowflake_sql.py  generates the tag-assignment scripts
+#     warehouse/snowflake/91_apply_tags_gold.sql and 92_apply_tags_marts.sql from this file
+#     (a test fails if the committed scripts drift from it).
+#   * src/lakehouse/governance/views.py  builds the analyst-facing masked views used by the
+#     DuckDB test that proves an analyst cannot read raw identifiers.
+#
+# classification (what the column is):
+#   PUBLIC        reference data or calendar facts, not about a person or a business
+#   INTERNAL      operational/technical, not about a person (keys, flags, load metadata)
+#   CONFIDENTIAL  business-sensitive or health/financial detail that does not identify anyone alone
+#   PHI_LIKE      identifies a person or is an identifying attribute of one (direct identifiers,
+#                 birth year, dates). "-LIKE" because the data is synthetic, not real PHI.
+# identifier: direct (identifies on its own) | quasi (identifies in combination) | none
+# handling (rule for readers WITHOUT the unmasked privilege; the transformer role sees raw):
+#   none        shown as stored. A justification is REQUIRED when the column is direct/quasi
+#               or PHI_LIKE
+#   hash        SHA-256 hex (Snowflake: SHA2(val, 256), unkeyed; portable: keyed HMAC in
+#               lakehouse.governance.tokenise). Stable, so joins on the hashed value still work
+#   mask        partial mask, keep the last two characters
+#   generalise  integers -> 5-year bucket start, dates -> first day of the year
+#   drop        returns NULL (or the column is removed from analyst views)
+# layer: gold = Snowflake DDL table, mart = dbt mart (columns follow the dbt YAML names).
+
+version: 1
+tables:
+  dim_date:
+    layer: gold
+    columns:
+      date_key: {classification: PUBLIC, identifier: none, handling: none}
+      full_date: {classification: PUBLIC, identifier: none, handling: none}
+      year: {classification: PUBLIC, identifier: none, handling: none}
+      quarter: {classification: PUBLIC, identifier: none, handling: none}
+      month: {classification: PUBLIC, identifier: none, handling: none}
+      month_name: {classification: PUBLIC, identifier: none, handling: none}
+      day_of_month: {classification: PUBLIC, identifier: none, handling: none}
+      day_of_week: {classification: PUBLIC, identifier: none, handling: none}
+      is_weekend: {classification: PUBLIC, identifier: none, handling: none}
+  dim_member:
+    layer: gold
+    columns:
+      member_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins; carries no attribute of the person. Unkeyed md5 in the fixture: production gold must use keyed tokenisation (lakehouse.governance)'}
+      member_id: {classification: PHI_LIKE, identifier: direct, handling: hash}
+      birth_year: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
+      sex: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: 'Two-value attribute needed for risk stratification; protected by role and row access, not by transformation'}
+      state: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: State-level geography is the coarsest HIPAA Safe Harbor unit; further restricted by the row access policy}
+      plan_type: {classification: INTERNAL, identifier: none, handling: none}
+      enrollment_date: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
+      effective_from: {classification: INTERNAL, identifier: none, handling: none}
+      effective_to: {classification: INTERNAL, identifier: none, handling: none}
+      is_current: {classification: INTERNAL, identifier: none, handling: none}
+      record_hash: {classification: CONFIDENTIAL, identifier: quasi, handling: drop}
+      load_batch_id: {classification: INTERNAL, identifier: none, handling: none}
+      loaded_at: {classification: INTERNAL, identifier: none, handling: none}
+  dim_provider:
+    layer: gold
+    columns:
+      provider_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins; carries no attribute of the person. Unkeyed md5 in the fixture: production gold must use keyed tokenisation (lakehouse.governance)'}
+      provider_id: {classification: CONFIDENTIAL, identifier: direct, handling: hash}
+      specialty: {classification: INTERNAL, identifier: none, handling: none}
+      state: {classification: INTERNAL, identifier: quasi, handling: none, justification: State-level provider location; not a person attribute}
+      network_status: {classification: INTERNAL, identifier: none, handling: none}
+      cost_tier: {classification: INTERNAL, identifier: none, handling: none}
+      effective_from: {classification: INTERNAL, identifier: none, handling: none}
+      effective_to: {classification: INTERNAL, identifier: none, handling: none}
+      is_current: {classification: INTERNAL, identifier: none, handling: none}
+      record_hash: {classification: INTERNAL, identifier: none, handling: none}
+      load_batch_id: {classification: INTERNAL, identifier: none, handling: none}
+      loaded_at: {classification: INTERNAL, identifier: none, handling: none}
+  dim_diagnosis:
+    layer: gold
+    columns:
+      diagnosis_sk: {classification: PUBLIC, identifier: none, handling: none}
+      icd10_code: {classification: PUBLIC, identifier: none, handling: none}
+      icd10_chapter: {classification: PUBLIC, identifier: none, handling: none}
+      description: {classification: PUBLIC, identifier: none, handling: none}
+      load_batch_id: {classification: INTERNAL, identifier: none, handling: none}
+      loaded_at: {classification: INTERNAL, identifier: none, handling: none}
+  fact_claim:
+    layer: gold
+    columns:
+      claim_id: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: 'Opaque claim key needed for header-to-line joins and audit drill-through; unique per event so linkable: tokenise at export in production'}
+      member_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins; carries no attribute of the person. Unkeyed md5 in the fixture: production gold must use keyed tokenisation (lakehouse.governance)'}
+      provider_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins; carries no attribute of the person. Unkeyed md5 in the fixture: production gold must use keyed tokenisation (lakehouse.governance)'}
+      primary_diagnosis_sk: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: Health information once joined to a member; reachable only through the member surrogate key}
+      service_date_key: {classification: PHI_LIKE, identifier: quasi, handling: none, justification: Dates of service kept at day grain (limited-data-set style); access limited to roles that need claim-level analysis}
+      received_date_key: {classification: PHI_LIKE, identifier: quasi, handling: none, justification: Dates of service kept at day grain (limited-data-set style); access limited to roles that need claim-level analysis}
+      claim_type: {classification: INTERNAL, identifier: none, handling: none}
+      place_of_service: {classification: INTERNAL, identifier: none, handling: none}
+      claim_status: {classification: INTERNAL, identifier: none, handling: none}
+      line_count: {classification: INTERNAL, identifier: none, handling: none}
+      total_billed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      total_allowed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      total_paid_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      load_batch_id: {classification: INTERNAL, identifier: none, handling: none}
+      loaded_at: {classification: INTERNAL, identifier: none, handling: none}
+  fact_claim_line:
+    layer: gold
+    columns:
+      line_id: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: Opaque line key; same reasoning as fact_claim.claim_id}
+      claim_id: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: Opaque claim key; same reasoning as fact_claim.claim_id (linkable, tokenise at export)}
+      line_number: {classification: INTERNAL, identifier: none, handling: none}
+      procedure_code: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: Health information once joined to a member; reference vocabulary on its own}
+      units: {classification: INTERNAL, identifier: none, handling: none}
+      service_date_key: {classification: PHI_LIKE, identifier: quasi, handling: none, justification: Dates of service kept at day grain (limited-data-set style); access limited to roles that need claim-level analysis}
+      billed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      allowed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      paid_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      load_batch_id: {classification: INTERNAL, identifier: none, handling: none}
+      loaded_at: {classification: INTERNAL, identifier: none, handling: none}
+  mart_claims_monthly:
+    layer: mart
+    columns:
+      month_key: {classification: INTERNAL, identifier: none, handling: none}
+      service_month: {classification: INTERNAL, identifier: none, handling: none}
+      claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      denied_claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      active_member_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      member_months: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      line_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      billed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      allowed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      paid_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      professional_paid_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      institutional_paid_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      pharmacy_paid_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      readmission_proxy_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      pmpm_paid: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      denial_rate: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      avg_allowed_per_line: {classification: CONFIDENTIAL, identifier: none, handling: none}
+  mart_provider_performance:
+    layer: mart
+    columns:
+      provider_id: {classification: CONFIDENTIAL, identifier: direct, handling: hash}
+      service_month: {classification: INTERNAL, identifier: none, handling: none}
+      specialty: {classification: INTERNAL, identifier: none, handling: none}
+      state_code: {classification: INTERNAL, identifier: quasi, handling: none, justification: Same reasoning as dim_provider.state, state-level provider location, not a person attribute}
+      network_status: {classification: INTERNAL, identifier: none, handling: none}
+      cost_tier: {classification: INTERNAL, identifier: none, handling: none}
+      claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      denied_claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      unique_members: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      line_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      allowed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      paid_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      readmission_proxy_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      denial_rate: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      avg_allowed_per_line: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      avg_paid_per_claim: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      specialty_cost_index: {classification: CONFIDENTIAL, identifier: none, handling: none}
+  mart_member_risk:
+    layer: mart
+    columns:
+      member_id: {classification: PHI_LIKE, identifier: direct, handling: hash}
+      birth_year: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
+      age_years: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
+      sex: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: Same reasoning as dim_member.sex, needed for risk stratification, protected by role and row access}
+      state_code: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: Same reasoning as dim_member.state, state-level geography, further limited by row access}
+      plan_type: {classification: INTERNAL, identifier: none, handling: none}
+      enrollment_date: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
+      last_service_date: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
+      claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      denied_claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      institutional_claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      readmission_proxy_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      distinct_provider_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      allowed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      paid_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      risk_score: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      risk_tier: {classification: CONFIDENTIAL, identifier: none, handling: none}
+  mart_denials:
+    layer: mart
+    columns:
+      service_month: {classification: INTERNAL, identifier: none, handling: none}
+      claim_type: {classification: INTERNAL, identifier: none, handling: none}
+      provider_specialty: {classification: INTERNAL, identifier: none, handling: none}
+      claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      denied_claim_count: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      denial_rate: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      billed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}
+      denied_billed_amount: {classification: CONFIDENTIAL, identifier: none, handling: none}

@@ -12,4 +12,6 @@ module "lakehouse_warehouse" {
   enable_external_stage = var.enable_external_stage
   gold_s3_url           = var.gold_s3_url
   storage_aws_role_arn  = var.storage_aws_role_arn
+
+  manage_privacy_policies = var.manage_privacy_policies
 }

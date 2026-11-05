@@ -123,3 +123,5 @@ version moves to 1.7+.
 ## Cross-cloud output contract
 
 The module also emits `layer_uris` (`s3a://<bucket>/` per layer) and `principals` (persona to `{id, principal_id}`, both the role ARN). `envs/dev` passes them through `infra/shared/modules/lakehouse_contract`, the same adapter the Azure env uses. See [multi-cloud.md](multi-cloud.md).
+
+How these storage controls map to HIPAA Security Rule safeguard categories, alongside masking and role controls, is in [privacy-and-access.md](privacy-and-access.md) (a mapping for discussion, not a compliance claim).

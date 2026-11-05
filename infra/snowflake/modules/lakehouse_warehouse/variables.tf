@@ -122,3 +122,14 @@ variable "storage_aws_role_arn" {
     error_message = "storage_aws_role_arn must be an IAM role ARN or empty."
   }
 }
+
+variable "manage_privacy_policies" {
+  description = <<-EOT
+    Let Terraform own the classification tags and tag-based masking policies (privacy.tf)
+    instead of warehouse/snowflake/90_masking_policies.sql. Mutually exclusive with that
+    script. Default false: the SQL script is the documented path. Never applied to a live
+    account (ticket #25).
+  EOT
+  type        = bool
+  default     = false
+}

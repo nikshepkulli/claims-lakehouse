@@ -112,6 +112,10 @@ Credentials come from environment variables only; `profiles.yml` holds no secret
 
 Record the outcome of the first live run in #15 and in `docs/snowflake.md`.
 
+## Privacy of the marts
+
+Every mart column is classified in `governance/data_classification.yaml`; `mart_member_risk.member_id` and `mart_provider_performance.provider_id` are hashed for analysts and birth year, age and dates are generalised. `tests/governance` fails if a mart column is added without a registry entry, and `tests/dbt/test_analyst_masking.py` proves on DuckDB that the analyst-facing views return no raw identifiers. On Snowflake, dbt rebuilds marts with `CREATE OR REPLACE`, which drops column tags, so run `warehouse/snowflake/92_apply_tags_marts.sql` after every `dbt build` (until then the marts are unprotected). Details and the unexecuted status: [privacy-and-access.md](privacy-and-access.md).
+
 ## Linting
 
 `sqlfluff lint .` must run **inside `dbt/`**: SQLFluff only honours `templater = jinja` from a `.sqlfluff` in the working directory, and the root `.sqlfluff` uses the raw templater for the plain SQL under `warehouse/`. `dbt/.sqlfluff` sets dialect `duckdb`, the Jinja templater (no dbt install needed; `load_macros_from_path = macros` plus sqlfluff's built-in `ref`/`source`/`config`/`var` stubs) and inherits line length and keyword case from the root. The root `.sqlfluffignore` lists `dbt/` so the repo-wide `sqlfluff lint .` job does not parse Jinja as raw SQL; the dbt workflow lints `dbt/` itself. `dbt/.sqlfluffignore` skips the macros (pure Jinja).

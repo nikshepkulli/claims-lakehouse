@@ -21,3 +21,9 @@ variable "notify_users" {
   type        = set(string)
   default     = []
 }
+
+variable "manage_privacy_policies" {
+  description = "Let Terraform own the classification tags and masking policies instead of warehouse/snowflake/90_masking_policies.sql (mutually exclusive)."
+  type        = bool
+  default     = false
+}
