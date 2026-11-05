@@ -14,3 +14,5 @@ spark-warehouse/
 target/
 dbt_packages/
 dbt/profiles.yml
+dbt/logs/
+dbt/.user.yml
