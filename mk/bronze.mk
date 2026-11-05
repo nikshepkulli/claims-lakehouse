@@ -8,6 +8,8 @@ SPARK_CACHE_VOL ?= claims-lakehouse-spark-cache
 RAW ?= data/raw
 BRONZE ?= data/bronze
 BATCH_DATE ?= all
+# Spark test directories; other layers append (mk/silver.mk). Override: make test-spark SPARK_TESTS=tests/bronze
+SPARK_TESTS ?= tests/bronze
 
 # Shared container prelude: install pinned deps into the cached volume, then run $(1).
 define SPARK_RUN
@@ -22,4 +24,4 @@ bronze: ## Ingest data/raw into Delta bronze in Docker (RAW=, BRONZE=, BATCH_DAT
 	$(call SPARK_RUN,python3 -m lakehouse.bronze --input $(RAW) --bronze $(BRONZE) --batch-date $(BATCH_DATE))
 
 test-spark: ## Run the Spark/Delta pytest suite (-m spark) inside the pinned Spark image
-	$(call SPARK_RUN,python3 -m pytest -m spark -p no:cacheprovider tests/bronze)
+	$(call SPARK_RUN,python3 -m pytest -m spark -p no:cacheprovider $(SPARK_TESTS))
