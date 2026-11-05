@@ -1,6 +1,6 @@
 # Streaming ingest (ticket #11)
 
-Claim lifecycle events are replayed from the generator's `claim_events.jsonl` into Redpanda under a versioned, compatibility-checked contract. The Spark streaming job that consumes them is ticket #12; this ticket delivers the contract, topics, producer and the validation/DLQ helpers that job will import.
+Claim lifecycle events are replayed from the generator's `claim_events.jsonl` into Redpanda under a versioned, compatibility-checked contract. The Spark streaming job that consumes them (ticket #12) is documented in [streaming-spark.md](streaming-spark.md); this ticket delivers the contract, topics, producer and the validation/DLQ helpers that job will import.
 
 Status: runs against the local Docker stack only. Nothing here has run on a managed Kafka service.
 
