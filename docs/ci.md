@@ -44,3 +44,7 @@ Tool versions are pinned in `requirements-dev.txt`; ruff and pytest settings liv
 
 Branch protection is a repo setting, not code. Require: `python lint + format`, `pytest`,
 `sqlfluff`, `terraform (gate)`.
+
+## Deployment (CD)
+
+`terraform-plan.yml` (PR plan comments) and `terraform-apply.yml` (manual, approval-gated) use OIDC and are documented in [cd.md](cd.md). Plan jobs are skipped (green) until the OIDC variables are set. They are not part of the required status checks.

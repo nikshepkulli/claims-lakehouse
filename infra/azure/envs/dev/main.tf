@@ -58,10 +58,25 @@ variable "tags" {
   default = {}
 }
 
+# Output contract shared with the AWS env: same keys and shapes on both clouds.
+module "contract" {
+  source = "../../../shared/modules/lakehouse_contract"
+
+  cloud      = "azure"
+  layer_uris = module.lakehouse_storage.layer_uris
+  principals = module.lakehouse_storage.principals
+}
+
 output "abfss_uris" {
   value = module.lakehouse_storage.abfss_uris
 }
 
+output "layer_uris" {
+  description = "bronze/silver/gold abfss:// URIs (cross-cloud contract)."
+  value       = module.contract.layer_uris
+}
+
 output "principals" {
-  value = module.lakehouse_storage.principals
+  description = "loader/transformer/analyst => {id, principal_id} (cross-cloud contract)."
+  value       = module.contract.principals
 }

@@ -1,0 +1,219 @@
+name: Terraform apply
+
+# Manual, approval-gated deploy. Never runs on push or pull_request.
+# plan (read-only identity) -> reviewer reads the plan -> GitHub Environment
+# approval -> apply the SAVED plan with the apply identity. See docs/cd.md.
+on:
+  workflow_dispatch:
+    inputs:
+      cloud:
+        description: Cloud to deploy
+        type: choice
+        options: [aws, azure]
+        required: true
+      environment:
+        description: Environment (maps to GitHub Environment <cloud>-<environment>)
+        type: choice
+        options: [dev]
+        default: dev
+        required: true
+
+permissions: {}
+
+# One deploy per cloud+env at a time; a queued run waits, never cancels a running apply.
+concurrency:
+  group: tf-apply-${{ inputs.cloud }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: 1.5.7
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+  WORKDIR: infra/${{ inputs.cloud }}/envs/${{ inputs.environment }}
+
+jobs:
+  plan:
+    name: plan (${{ inputs.cloud }}/${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    # Only the default branch may deploy.
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require remote state
+        env:
+          AWS_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          AZ_SA: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+        run: |
+          # The envs default to local state, which does not survive a CI runner.
+          # Applying against it would orphan the resources. Refuse.
+          if [ "${{ inputs.cloud }}" = aws ] && [ -z "$AWS_BUCKET" ]; then
+            echo "::error::Set repo variable TF_STATE_BUCKET (and TF_LOCK_TABLE). CD refuses to apply with local state. See docs/cd.md."; exit 1
+          fi
+          if [ "${{ inputs.cloud }}" = azure ] && [ -z "$AZ_SA" ]; then
+            echo "::error::Set repo variable TF_STATE_STORAGE_ACCOUNT (and TF_STATE_RESOURCE_GROUP). CD refuses to apply with local state. See docs/cd.md."; exit 1
+          fi
+
+      - name: AWS credentials (OIDC, read-only plan role)
+        if: inputs.cloud == 'aws'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-session-name: gha-apply-plan-${{ github.run_id }}
+
+      - name: Azure login (OIDC, read-only plan identity)
+        if: inputs.cloud == 'azure'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_PLAN_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure backend
+        env:
+          AWS_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          AWS_LOCK: ${{ vars.TF_LOCK_TABLE }}
+          AWS_REGION_V: ${{ vars.AWS_REGION || 'us-east-1' }}
+          AZ_RG: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+          AZ_SA: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+          AZ_CONTAINER: ${{ vars.TF_STATE_CONTAINER || 'tfstate' }}
+        run: |
+          key="claims-lakehouse/${{ inputs.environment }}.tfstate"
+          if [ "${{ inputs.cloud }}" = aws ]; then
+            printf 'terraform {\n  backend "s3" {}\n}\n' > "$WORKDIR/backend_override.tf"
+            echo "TF_INIT_ARGS=-backend-config=bucket=$AWS_BUCKET -backend-config=key=$key -backend-config=region=$AWS_REGION_V -backend-config=dynamodb_table=$AWS_LOCK -backend-config=encrypt=true" >> "$GITHUB_ENV"
+          else
+            printf 'terraform {\n  backend "azurerm" {}\n}\n' > "$WORKDIR/backend_override.tf"
+            echo "TF_INIT_ARGS=-backend-config=resource_group_name=$AZ_RG -backend-config=storage_account_name=$AZ_SA -backend-config=container_name=$AZ_CONTAINER -backend-config=key=$key -backend-config=use_azuread_auth=true -backend-config=use_oidc=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: terraform init
+        working-directory: ${{ env.WORKDIR }}
+        env:
+          ARM_USE_OIDC: ${{ inputs.cloud == 'azure' && 'true' || '' }}
+          ARM_CLIENT_ID: ${{ inputs.cloud == 'azure' && vars.AZURE_PLAN_CLIENT_ID || '' }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          # shellcheck disable=SC2086 # TF_INIT_ARGS is a deliberate space-separated flag list
+          terraform init -input=false $TF_INIT_ARGS
+
+      - name: terraform plan (saved)
+        id: plan
+        working-directory: ${{ env.WORKDIR }}
+        env:
+          TF_VAR_trusted_principal_arns: ${{ vars.TF_TRUSTED_PRINCIPAL_ARNS || '[]' }}
+          ARM_USE_OIDC: ${{ inputs.cloud == 'azure' && 'true' || '' }}
+          ARM_CLIENT_ID: ${{ inputs.cloud == 'azure' && vars.AZURE_PLAN_CLIENT_ID || '' }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set +e
+          terraform plan -input=false -no-color -lock-timeout=60s -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
+          code=${PIPESTATUS[0]}
+          [ "$code" -ne 1 ] || exit 1
+          if [ "$code" -eq 2 ]; then echo "has_changes=true" >> "$GITHUB_OUTPUT"; else echo "has_changes=false" >> "$GITHUB_OUTPUT"; fi
+          {
+            echo "### Plan for ${{ inputs.cloud }}/${{ inputs.environment }} (review before approving the apply job)"
+            echo '```'
+            tail -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload saved plan
+        if: steps.plan.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.cloud }}-${{ inputs.environment }}
+          path: |
+            ${{ env.WORKDIR }}/tfplan
+            ${{ env.WORKDIR }}/backend_override.tf
+          retention-days: 1 # the plan file can embed sensitive values; keep it short-lived
+          if-no-files-found: error
+
+  apply:
+    name: apply (${{ inputs.cloud }}/${{ inputs.environment }})
+    needs: plan
+    if: needs.plan.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    # Required reviewers on this Environment = the manual approval gate.
+    environment: ${{ inputs.cloud }}-${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS credentials (OIDC, apply role)
+        if: inputs.cloud == 'aws'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }} # Environment-level variable
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-session-name: gha-apply-${{ github.run_id }}
+
+      - name: Azure login (OIDC, apply identity)
+        if: inputs.cloud == 'azure'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }} # Environment-level variable
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.cloud }}-${{ inputs.environment }}
+          path: ${{ env.WORKDIR }}
+
+      - name: Re-derive backend args
+        env:
+          AWS_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          AWS_LOCK: ${{ vars.TF_LOCK_TABLE }}
+          AWS_REGION_V: ${{ vars.AWS_REGION || 'us-east-1' }}
+          AZ_RG: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+          AZ_SA: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+          AZ_CONTAINER: ${{ vars.TF_STATE_CONTAINER || 'tfstate' }}
+        run: |
+          key="claims-lakehouse/${{ inputs.environment }}.tfstate"
+          if [ "${{ inputs.cloud }}" = aws ]; then
+            echo "TF_INIT_ARGS=-backend-config=bucket=$AWS_BUCKET -backend-config=key=$key -backend-config=region=$AWS_REGION_V -backend-config=dynamodb_table=$AWS_LOCK -backend-config=encrypt=true" >> "$GITHUB_ENV"
+          else
+            echo "TF_INIT_ARGS=-backend-config=resource_group_name=$AZ_RG -backend-config=storage_account_name=$AZ_SA -backend-config=container_name=$AZ_CONTAINER -backend-config=key=$key -backend-config=use_azuread_auth=true -backend-config=use_oidc=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: terraform init
+        working-directory: ${{ env.WORKDIR }}
+        env:
+          ARM_USE_OIDC: ${{ inputs.cloud == 'azure' && 'true' || '' }}
+          ARM_CLIENT_ID: ${{ inputs.cloud == 'azure' && vars.AZURE_CLIENT_ID || '' }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          # shellcheck disable=SC2086 # TF_INIT_ARGS is a deliberate space-separated flag list
+          terraform init -input=false $TF_INIT_ARGS
+
+      - name: terraform apply (saved plan)
+        working-directory: ${{ env.WORKDIR }}
+        env:
+          ARM_USE_OIDC: ${{ inputs.cloud == 'azure' && 'true' || '' }}
+          ARM_CLIENT_ID: ${{ inputs.cloud == 'azure' && vars.AZURE_CLIENT_ID || '' }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        # A saved plan is rejected by Terraform if state changed since planning (stale plan).
+        run: terraform apply -input=false -no-color -lock-timeout=300s tfplan
