@@ -6,6 +6,6 @@
 dbt-core==1.12.6
 dbt-duckdb==1.11.1
 duckdb==2.0.0
-sqlfluff==3.3.0
+sqlfluff==4.5.0
 pytest==8.3.4
 PyYAML==6.0.2

@@ -1,6 +1,6 @@
-ruff==0.8.6
+ruff==0.17.3
 pytest==8.3.4
-sqlfluff==3.3.0
+sqlfluff==4.5.0
 
 # claimsgen runtime deps (tests import them)
 -r requirements-claimsgen.txt
