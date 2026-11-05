@@ -4,14 +4,38 @@ updates:
     directory: /
     schedule: {interval: weekly}
     open-pull-requests-limit: 3
+    # Deploy-path actions: majors stay manual until the OIDC plan/apply workflows
+    # (terraform-plan.yml, terraform-apply.yml) have run against a real cloud.
+    ignore:
+      - dependency-name: aws-actions/configure-aws-credentials
+        update-types: ["version-update:semver-major"]
+      - dependency-name: azure/login
+        update-types: ["version-update:semver-major"]
+      - dependency-name: actions/upload-artifact
+        update-types: ["version-update:semver-major"]
+      - dependency-name: actions/download-artifact
+        update-types: ["version-update:semver-major"]
     groups:
       actions: {patterns: ["*"]}
   - package-ecosystem: pip
     directory: /
     schedule: {interval: weekly}
     open-pull-requests-limit: 3
+    # pyspark/delta-spark must match the pinned Spark Docker image; numpy/pyarrow majors
+    # can change generator output (golden tests), so majors are upgraded deliberately.
+    ignore:
+      - dependency-name: pyspark
+        update-types: ["version-update:semver-major"]
+      - dependency-name: delta-spark
+        update-types: ["version-update:semver-major"]
+      - dependency-name: numpy
+        update-types: ["version-update:semver-major"]
+      - dependency-name: pyarrow
+        update-types: ["version-update:semver-major"]
     groups:
-      python-dev: {patterns: ["*"]}
+      # Lint-rule changes get reviewed on their own, never mixed with runtime bumps.
+      linters: {patterns: ["ruff", "sqlfluff"]}
+      python-dev: {patterns: ["*"], update-types: ["minor", "patch"]}
   - package-ecosystem: terraform
     directories:
       - "/infra/*/envs/*"
