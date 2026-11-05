@@ -1,6 +1,6 @@
 # Spark + Delta test/runtime deps (Spark 3.5.x line; compose image is apache/spark 3.5.5, Java 17)
-pyspark==3.5.5
-delta-spark==3.3.2
+pyspark==4.3.0
+delta-spark==4.4.1
 # claimsgen (fixture data) + test runner
 -r requirements-claimsgen.txt
-pytest==8.3.4
+pytest==9.2.0
