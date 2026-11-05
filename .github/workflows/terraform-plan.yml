@@ -58,13 +58,13 @@ jobs:
       WORKDIR: infra/aws/envs/${{ matrix.env }}
       TF_VAR_trusted_principal_arns: ${{ vars.TF_TRUSTED_PRINCIPAL_ARNS || '[]' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
           role-session-name: gha-plan-${{ github.run_id }}
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
@@ -102,7 +102,7 @@ jobs:
           [ "$code" -ne 1 ]
       - name: Comment plan on PR
         if: always() && steps.plan.outcome != 'skipped'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PLAN_FILE: ${{ env.WORKDIR }}/plan.txt
           TITLE: Terraform plan (aws/${{ matrix.env }})
@@ -141,13 +141,13 @@ jobs:
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_PLAN_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
@@ -182,7 +182,7 @@ jobs:
           [ "$code" -ne 1 ]
       - name: Comment plan on PR
         if: always() && steps.plan.outcome != 'skipped'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PLAN_FILE: ${{ env.WORKDIR }}/plan.txt
           TITLE: Terraform plan (azure/${{ matrix.env }})
