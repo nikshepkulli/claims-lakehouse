@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-lint:
+    name: python lint + format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: make -f mk/quality.mk test
+
+  sqlfluff:
+    name: sqlfluff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: sqlfluff lint .
+
+  tf-discover:
+    name: discover terraform dirs
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.find.outputs.dirs }}
+      any: ${{ steps.find.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          dirs=$(find infra -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | jq -R . | jq -sc .)
+          [ -z "$dirs" ] && dirs='[]'
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
+          if [ "$dirs" = '[]' ]; then echo "any=false" >> "$GITHUB_OUTPUT"; else echo "any=true" >> "$GITHUB_OUTPUT"; fi
+          echo "terraform dirs: $dirs"
+
+  terraform:
+    name: terraform (${{ matrix.dir }})
+    needs: tf-discover
+    if: needs.tf-discover.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJson(needs.tf-discover.outputs.dirs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+        working-directory: ${{ matrix.dir }}
+      - run: terraform init -backend=false -input=false
+        working-directory: ${{ matrix.dir }}
+      - run: terraform validate
+        working-directory: ${{ matrix.dir }}
+
+  terraform-gate:
+    name: terraform (gate)
+    needs: [tf-discover, terraform]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pass if terraform passed or was skipped (no infra dirs)
+        run: |
+          r="${{ needs.terraform.result }}"
+          echo "terraform result: $r"
+          [ "$r" = "success" ] || [ "$r" = "skipped" ]
