@@ -810,7 +810,14 @@ def summarize(spark: SparkSession, cfg: StreamConfig) -> dict[str, int]:
 def build_stream_spark(
     cfg: StreamConfig, master: str | None = None, conf: dict[str, str] | None = None
 ) -> SparkSession:
+    import os
+    from pathlib import Path
+
     import pyspark
+
+    # Python UDF workers must import lakehouse.* too (they do not inherit sys.path edits)
+    src = str(Path(__file__).resolve().parents[2])
+    pypath = os.pathsep.join(p for p in (src, os.environ.get("PYTHONPATH")) if p)
 
     packages = []
     if cfg.source == "kafka" and "bronze" in cfg.stages:
@@ -819,7 +826,11 @@ def build_stream_spark(
         "claims-streaming",
         master=master,
         bronze_root=cfg.bronze_root,
-        conf={"spark.sql.shuffle.partitions": "4", **(conf or {})},
+        conf={
+            "spark.sql.shuffle.partitions": "4",
+            "spark.executorEnv.PYTHONPATH": pypath,
+            **(conf or {}),
+        },
         extra_packages=packages,
     )
 

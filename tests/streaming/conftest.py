@@ -38,6 +38,7 @@ def spark(tmp_path_factory):
             "spark.ui.enabled": "false",
             "spark.sql.warehouse.dir": str(wh),
             "spark.databricks.delta.snapshotPartitions": "2",
+            "spark.executorEnv.PYTHONPATH": str(SRC),  # UDF workers must import lakehouse.*
             "spark.sql.adaptive.enabled": "false",
             "spark.databricks.delta.optimizeWrite.enabled": "false",
         },
