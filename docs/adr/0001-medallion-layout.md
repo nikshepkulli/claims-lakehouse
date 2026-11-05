@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-05
 - **Tickets:** #4 (this record), #6 bronze, #7 silver, #8 gold, #12 streaming
+- **Amended:** 2026-11-05: the bronze ingestion-timestamp column is `_ingest_ts` (as implemented in #6), not `_ingested_at` as first written, and `_ingest_date` (the batch date, the partition column) was added to the metadata list. Decision unchanged.
 
 ## Context
 
@@ -30,7 +31,7 @@ The platform ingests synthetic healthcare claims (members, providers, claims, cl
 
 Use **C, medallion**, with these rules:
 
-- **Bronze:** append-only, source-shaped, plus ingestion metadata (`_ingested_at`, `_source_file`, `_batch_id`). Schema captured, not enforced. Idempotent re-runs keyed on batch ID.
+- **Bronze:** append-only, source-shaped, plus ingestion metadata (`_ingest_ts`, `_source_file`, `_batch_id`, `_ingest_date`). Schema captured, not enforced. Idempotent re-runs keyed on batch ID.
 - **Silver:** typed, deduplicated on claim business key with latest-adjustment-wins, validated. Rows failing checks go to a **quarantine table** with a reason code, never dropped. PII columns tagged here.
 - **Gold:** dimensional model (claim facts; member, provider, diagnosis, date dimensions) built for analytics. Gold is what Snowflake and dbt consume.
 - Streaming and batch write to the **same** bronze/silver tables (Delta supports both), so there is one set of business logic.

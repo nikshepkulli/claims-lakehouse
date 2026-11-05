@@ -17,7 +17,7 @@ data/raw (claimsgen)                       <bronze root URI>
 
 A **batch** is one calendar date `D`. Running batch `D` ingests, for every dataset, the partition `*=D` (events: the rows whose `event_ts` falls on `D`). `batch_id` is `bYYYYMMDD`.
 
-Bronze keeps data source-shaped: no casting, no dedupe, no cleansing. Parquet keeps its types; CSV (only used if a partition has no Parquet copy) lands as strings. The injected defects (duplicate claims, bad codes, orphans, late arrivals) are deliberately still present for silver (#7) to catch.
+Bronze keeps data source-shaped: no casting, no dedupe, no cleansing. Parquet keeps its types; CSV (only used if a partition has no Parquet copy) lands as strings. The injected defects (duplicate claims, bad codes, orphans, late arrivals) are deliberately still present for [silver](silver.md) (#7) to catch.
 
 ### Metadata columns (last four columns of every table)
 
@@ -28,7 +28,7 @@ Bronze keeps data source-shaped: no casting, no dedupe, no cleansing. Parquet ke
 | `_batch_id` | `bYYYYMMDD` |
 | `_ingest_date` | the batch date (not wall-clock); the Delta partition column |
 
-ADR-0001 sketched `_ingested_at`; the implemented name is `_ingest_ts`.
+ADR-0001 originally sketched `_ingested_at`; the implemented name is `_ingest_ts` (the ADR carries an amendment note).
 
 ## Idempotency: `replaceWhere` on the batch
 
@@ -59,7 +59,7 @@ Per run, per dataset, `_meta/schema_log` records the observed schema (Spark sche
 - an unreadable structured file (corrupt Parquet footer, unreadable CSV) or a type-conflicting file is quarantined as a whole (`payload` is null) and the rest of the batch continues;
 - a JSONL line that is not valid JSON, has a field of the wrong type, or (events) lacks a parseable `event_ts` is quarantined with the raw line in `payload`; good lines continue. Malformed events lines cannot be assigned to a date, so they are recorded under every events batch run: dedupe on `(source_file, payload)`.
 
-Only the footer/schema is validated up front for Parquet; a file corrupt inside a data page would fail the batch at write time, and the batch can be re-run after the file is fixed.
+Only the footer/schema is validated up front for Parquet. **Known gap ([#55](https://github.com/nikshepkulli/claims-lakehouse/issues/55)):** a file that is corrupt only inside a data page passes that check, then fails the whole batch at write time instead of being quarantined; fix the file and re-run the batch.
 
 ## Run
 
