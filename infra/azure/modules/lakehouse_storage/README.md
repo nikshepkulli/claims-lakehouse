@@ -24,7 +24,8 @@ module "lakehouse_storage" {
 | `public_network_access_enabled` | `false` | Firewall default action is always `Deny` |
 | `enable_private_endpoint`, `private_endpoint_subnet_id`, `private_dns_zone_ids` | `false` | blob + dfs endpoints |
 | `enable_customer_managed_key`, `key_vault_id`, `key_vault_key_id` | `false` | Versionless key ID for auto-rotation |
-| `enable_versioning` | `true` | Set `false` if your subscription/region rejects versioning on HNS |
+| `enable_versioning` | `false` | Versioning is unsupported on HNS accounts; `true` fails a precondition |
+| `enable_snapshot_cleanup` | `false` | Snapshots are preview-only on HNS; action never emitted |
 | `shared_access_key_enabled` | `false` | Entra-only auth |
 
 ## Key outputs

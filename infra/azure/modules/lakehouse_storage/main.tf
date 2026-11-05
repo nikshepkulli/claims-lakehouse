@@ -2,10 +2,24 @@ locals {
   base_name = "${var.project}-${var.environment}"
 
   resource_group_name = coalesce(var.resource_group_name, "rg-${local.base_name}")
+  # Storage account names are globally unique. The default appends a
+  # deterministic 6-char suffix (sha1 of subscription ID + resource group name;
+  # both known at plan time) to a prefix truncated to 17 chars: 17 + 6 = 23 <= 24.
+  storage_name_suffix = substr(sha1("${data.azurerm_client_config.current.subscription_id}/${local.resource_group_name}"), 0, 6)
   storage_account_name = coalesce(
     var.storage_account_name,
-    substr("st${replace(lower(local.base_name), "-", "")}", 0, 24)
+    "${substr("st${replace(lower(local.base_name), "/[^a-z0-9]/", "")}", 0, 17)}${local.storage_name_suffix}"
   )
+
+  hns_enabled = true # ADLS Gen2; fixed by design of this module.
+
+  # Per Microsoft Learn feature-support matrix: with HNS, blob versioning is not
+  # supported and snapshots are preview only. Lifecycle version/snapshot actions
+  # are therefore emitted only on non-HNS accounts and when the feature is on.
+  versioning_supported = !local.hns_enabled
+  snapshots_supported  = !local.hns_enabled
+  lifecycle_versions   = var.enable_versioning && local.versioning_supported
+  lifecycle_snapshots  = var.enable_snapshot_cleanup && local.snapshots_supported
 
   tags = merge(var.tags, {
     project     = var.project
@@ -66,6 +80,8 @@ locals {
   private_endpoint_subresources = var.enable_private_endpoint ? toset(["blob", "dfs"]) : toset([])
 }
 
+data "azurerm_client_config" "current" {}
+
 resource "azurerm_resource_group" "this" {
   name     = local.resource_group_name
   location = var.location
@@ -103,6 +119,12 @@ resource "azurerm_role_assignment" "cmk" {
 
 # ---- Storage account (ADLS Gen2) ----
 
+# checkov:skip=CKV2_AZURE_1: CMK is optional (enable_customer_managed_key); Microsoft-managed keys + infrastructure encryption are the accepted default for synthetic data.
+# checkov:skip=CKV2_AZURE_40: Shared key access is disabled by default (shared_access_key_enabled=false); toggling it is a caller decision.
+# checkov:skip=CKV2_AZURE_47: Anonymous access is already blocked (allow_nested_items_to_be_public=false); no further action needed.
+# checkov:skip=CKV_AZURE_206: Replication is LRS in dev by design (cost); prod uses GZRS.
+# checkov:skip=CKV2_AZURE_33: Private endpoint is optional (enable_private_endpoint); the default is firewall Deny with no public access.
+# checkov:skip=CKV2_AZURE_38: Soft delete is enabled for blobs and containers; versioning is unsupported on HNS accounts.
 resource "azurerm_storage_account" "this" {
   name                = local.storage_account_name
   resource_group_name = azurerm_resource_group.this.name
@@ -113,7 +135,7 @@ resource "azurerm_storage_account" "this" {
   account_replication_type = var.environment == "prod" ? "GZRS" : "LRS"
   access_tier              = "Hot"
 
-  is_hns_enabled                    = true
+  is_hns_enabled                    = local.hns_enabled
   min_tls_version                   = "TLS1_2"
   https_traffic_only_enabled        = true
   allow_nested_items_to_be_public   = false
@@ -129,7 +151,7 @@ resource "azurerm_storage_account" "this" {
   }
 
   blob_properties {
-    versioning_enabled = var.enable_versioning
+    versioning_enabled = local.lifecycle_versions
 
     delete_retention_policy {
       days = var.soft_delete_retention_days
@@ -161,6 +183,10 @@ resource "azurerm_storage_account" "this" {
     precondition {
       condition     = !var.enable_customer_managed_key || (var.key_vault_id != null && var.key_vault_key_id != null)
       error_message = "key_vault_id and key_vault_key_id are required when enable_customer_managed_key = true."
+    }
+    precondition {
+      condition     = !var.enable_versioning || local.versioning_supported
+      error_message = "Blob versioning is not supported on hierarchical-namespace (ADLS Gen2) accounts. Set enable_versioning = false."
     }
     precondition {
       condition     = !var.enable_private_endpoint || var.private_endpoint_subnet_id != null
@@ -210,11 +236,17 @@ resource "azurerm_storage_management_policy" "this" {
         tier_to_cool_after_days_since_modification_greater_than    = var.bronze_cool_after_days
         tier_to_archive_after_days_since_modification_greater_than = var.bronze_archive_after_days
       }
-      version {
-        delete_after_days_since_creation = var.noncurrent_version_delete_after_days
+      dynamic "version" {
+        for_each = local.lifecycle_versions ? [1] : []
+        content {
+          delete_after_days_since_creation = var.noncurrent_version_delete_after_days
+        }
       }
-      snapshot {
-        delete_after_days_since_creation_greater_than = var.noncurrent_version_delete_after_days
+      dynamic "snapshot" {
+        for_each = local.lifecycle_snapshots ? [1] : []
+        content {
+          delete_after_days_since_creation_greater_than = var.noncurrent_version_delete_after_days
+        }
       }
     }
   }
@@ -230,23 +262,33 @@ resource "azurerm_storage_management_policy" "this" {
       base_blob {
         tier_to_cool_after_days_since_modification_greater_than = var.silver_cool_after_days
       }
-      version {
-        delete_after_days_since_creation = var.noncurrent_version_delete_after_days
+      dynamic "version" {
+        for_each = local.lifecycle_versions ? [1] : []
+        content {
+          delete_after_days_since_creation = var.noncurrent_version_delete_after_days
+        }
       }
     }
   }
 
-  # Gold stays Hot (serving layer); only prune old versions.
-  rule {
-    name    = "gold-version-cleanup"
-    enabled = true
-    filters {
-      blob_types   = ["blockBlob"]
-      prefix_match = ["${var.gold_name}/"]
-    }
-    actions {
-      version {
-        delete_after_days_since_creation = var.noncurrent_version_delete_after_days
+  # Gold stays Hot (serving layer); only prune old versions. Only created when
+  # versioning is enabled and supported (a rule with no actions is invalid).
+  dynamic "rule" {
+    for_each = local.lifecycle_versions ? [1] : []
+    content {
+      name    = "gold-version-cleanup"
+      enabled = true
+      filters {
+        blob_types   = ["blockBlob"]
+        prefix_match = ["${var.gold_name}/"]
+      }
+      actions {
+        dynamic "version" {
+          for_each = local.lifecycle_versions ? [1] : []
+          content {
+            delete_after_days_since_creation = var.noncurrent_version_delete_after_days
+          }
+        }
       }
     }
   }

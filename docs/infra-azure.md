@@ -7,7 +7,7 @@ Terraform module: `infra/azure/modules/lakehouse_storage`; example environment: 
 - One StorageV2 account with hierarchical namespace (ADLS Gen2). Each medallion layer is a filesystem (blob container): `bronze` (raw), `silver` (conformed), `gold` (marts). Filesystems are created through the management plane (`storage_account_id`), so Terraform never needs data-plane or firewall access.
 - Three user-assigned managed identities, one per persona: `loader`, `transformer`, `analyst`. Extra Entra principals (CI service principals, groups) can be added through `*_principal_ids`.
 - Replication is `LRS` in dev and `GZRS` in prod.
-- Naming: `st<project><env>` (override with `storage_account_name` on global collision), `rg-<project>-<env>`, `id-<project>-<env>-<persona>`.
+- Naming: storage account = `st<project><env>` truncated to 17 chars plus a 6-char suffix, the first 6 hex chars of `sha1(subscription_id/resource_group_name)` (e.g. `stclaimslakehouse1a2b3c`; at most 23 chars). Both inputs are known at plan time, so the name is stable and mostly collision-free across subscriptions; `data.azurerm_client_config` needs no API call at `validate`. Set `storage_account_name` to pin an exact name. Resource group: `rg-<project>-<env>`, `id-<project>-<env>-<persona>`.
 
 ## Security decisions mapped to controls
 
@@ -19,16 +19,16 @@ Terraform module: `infra/azure/modules/lakehouse_storage`; example environment: 
 | Entra-only auth | `shared_access_key_enabled=false`, `default_to_oauth_authentication` | No long-lived keys; every access attributable |
 | No anonymous blobs | `allow_nested_items_to_be_public=false`, container access `private` | Data exposure prevention |
 | Least-privilege RBAC at filesystem scope | role assignments per container; analyst = Blob Data Reader on gold only | Minimum necessary access (164.502(b)) |
-| Soft delete + versioning | blob and container retention (default 14 d), versioning | Recoverability, ransomware/mistake protection |
+| Soft delete | blob and container retention (default 14 d); versioning is NOT available on HNS (see Caveats) | Recoverability, ransomware/mistake protection |
 | Double encryption | `infrastructure_encryption_enabled` | Defence in depth at rest |
 | Customer-managed key (optional) | user-assigned identity with `Key Vault Crypto Service Encryption User`, versionless key | Key custody and revocation; Key Vault needs purge protection |
 | Audit logging | diagnostic settings (StorageRead/Write/Delete, metrics) to Log Analytics | Audit controls (164.312(b)) |
-| Lifecycle policy | bronze Cool 30 d / Archive 180 d; silver Cool 90 d; gold Hot; versions pruned at 90 d | Cost control and retention hygiene |
+| Lifecycle policy | bronze Cool 30 d / Archive 180 d; silver Cool 90 d; gold Hot; version/snapshot pruning only when supported (not on HNS) | Cost control and retention hygiene |
 | Tags | `project`, `environment`, `managed_by`, `data_class` plus caller tags | Ownership and cost allocation |
 
 The data is synthetic; controls are set as if it were PHI-like so the pattern is realistic.
 
-Static analysis: the module is written to satisfy common checkov rules for `azurerm_storage_account`. Known deliberate gaps: no SAS expiration policy (shared keys are disabled) and no geo-replication in dev.
+Static analysis: the module is written to satisfy common checkov rules for `azurerm_storage_account`. Intentionally accepted findings carry `# checkov:skip=<ID>: <reason>` comments in `main.tf` (optional CMK, optional private endpoint, LRS in dev). Known deliberate gaps: no SAS expiration policy (shared keys are disabled) and no geo-replication in dev.
 
 ## AWS vs Azure equivalence
 
@@ -41,7 +41,7 @@ Static analysis: the module is written to satisfy common checkov rules for `azur
 | TLS enforcement | bucket policy `aws:SecureTransport` | `min_tls_version`, HTTPS-only |
 | Block public access | S3 Block Public Access | `allow_nested_items_to_be_public=false`, firewall `Deny` |
 | Private connectivity | VPC gateway/interface endpoint | Private endpoint (blob, dfs) |
-| Recovery | bucket versioning | blob versioning + soft delete |
+| Recovery | bucket versioning | soft delete only (blob versioning unsupported on HNS) |
 | Tiering | lifecycle rules (IA, Glacier) | management policy (Cool, Archive) |
 | Audit | CloudTrail data events / access logs | Diagnostic settings to Log Analytics |
 | Interface | `project`, `environment`, `tags`, layer names, principals | Same variable names |
@@ -50,11 +50,35 @@ Static analysis: the module is written to satisfy common checkov rules for `azur
 
 - Idle cost is near zero: storage is per GB-month (Hot LRS is the baseline), plus transactions. Private endpoints cost roughly USD 7-8/month each (two created when enabled) plus data processed; leave them off for a demo.
 - Log Analytics is billed per GB ingested; blob read/write/delete logs are the main driver. Retention defaults to 90 days; lower `log_retention_days` or drop `StorageRead` in dev if volume grows.
-- Soft delete and versions are billed as stored data, so the 90-day version cleanup matters. Archive tier has early-deletion charges (180 days).
+- Soft-deleted data is billed as stored data. Archive tier has early-deletion charges (180 days).
 - GZRS in prod roughly doubles-plus storage cost vs LRS; dev stays LRS.
 
 ## Caveats
 
-- Blob versioning on hierarchical-namespace accounts depends on subscription/region support; if the API rejects it, set `enable_versioning = false`. Soft delete is unaffected.
+- **HNS feature limits.** Checked 2026-11-05 against Microsoft Learn "Blob Storage feature support in Azure storage accounts" (https://learn.microsoft.com/en-us/azure/storage/blobs/storage-feature-support-in-storage-accounts, page ms.date 2026-05-18): for standard general-purpose v2 with HNS, **blob versioning is not supported**, **blob snapshots are preview-level**, and change feed, point-in-time restore, object replication and version-level WORM are also unsupported. Soft delete (blobs, containers), lifecycle tiering/delete, container-level WORM, CMK and Entra auth are supported.
+- Consequently `enable_versioning` defaults to `false` and setting it `true` fails a plan-time precondition. `enable_snapshot_cleanup` (default `false`) is gated the same way. Lifecycle `version`/`snapshot` actions are emitted through `dynamic` blocks only when the feature is enabled and supported, and the `gold-version-cleanup` rule disappears with them, so the policy stays valid. Recovery on this account relies on soft delete (14 d default).
 - With public access off and no private endpoint, data-plane access (Spark, azcopy) is impossible by design; enable a private endpoint or temporarily allow specific IPs.
 - Local state is used in `envs/dev`; a commented `azurerm` backend example shows the remote setup.
+
+## Interface differences vs AWS module
+
+Variables are intentionally not renamed here; multi-cloud ticket #20 will reconcile them (adapter or shared interface).
+
+| Concern | AWS module | Azure module |
+|---|---|---|
+| Name prefix | `name_prefix` | `project` (default `claims-lakehouse`) |
+| Environment | `environment` | `environment` (validated: dev/staging/prod) |
+| Tags | `tags` | `tags` |
+| Layer names | fixed bucket naming from `name_prefix` | `bronze_name`, `silver_name`, `gold_name` |
+| Loader principals | `loader_trusted_principal_arns` | `loader_principal_ids` (Entra object IDs) |
+| Transformer principals | `transformer_trusted_principal_arns` | `transformer_principal_ids` |
+| Analyst principals | `analyst_trusted_principal_arns` | `analyst_principal_ids` |
+| Version retention | `noncurrent_version_expiration_days` | `noncurrent_version_delete_after_days` (no-op on HNS) |
+| Bronze tiering | `bronze_intelligent_tiering_days` | `bronze_cool_after_days`, `bronze_archive_after_days` |
+| Log retention | `access_log_retention_days` | `log_retention_days` |
+| Encryption key | `kms_deletion_window_days` (module-created KMS) | `enable_customer_managed_key`, `key_vault_id`, `key_vault_key_id` (BYO Key Vault key) |
+| Destroy safety | `force_destroy` | none (not exposed) |
+| Azure-only | - | `location`, `resource_group_name`, `storage_account_name`, network and private-endpoint inputs, `shared_access_key_enabled`, `enable_snapshot_cleanup` |
+| AWS-only | `max_session_duration` | - |
+
+Principal inputs differ in kind: AWS takes trusted principal ARNs that may assume the role; Azure takes object IDs that receive RBAC directly (the module also creates one managed identity per persona).

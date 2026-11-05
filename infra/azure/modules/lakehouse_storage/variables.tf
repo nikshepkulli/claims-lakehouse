@@ -36,7 +36,7 @@ variable "resource_group_name" {
 }
 
 variable "storage_account_name" {
-  description = "Globally unique storage account name (3-24 lowercase alphanumerics). Defaults to a name derived from project+environment; override on collision."
+  description = "Globally unique storage account name (3-24 lowercase alphanumerics). Default: st<project><env> truncated to 17 chars + 6-char sha1 suffix of subscription ID + resource group name. Override to pin an exact name."
   type        = string
   default     = null
 
@@ -119,9 +119,15 @@ variable "private_dns_zone_ids" {
 # ---- Data protection ----
 
 variable "enable_versioning" {
-  description = "Enable blob versioning. Note: versioning on hierarchical-namespace accounts is subscription/region dependent; set false if the API rejects it."
+  description = "Enable blob versioning and version-cleanup lifecycle rules. NOT supported on hierarchical-namespace (ADLS Gen2) accounts, which this module always creates; setting true fails a precondition. Kept for interface parity."
   type        = bool
-  default     = true
+  default     = false
+}
+
+variable "enable_snapshot_cleanup" {
+  description = "Add snapshot-deletion lifecycle actions. Snapshots are preview-only on HNS accounts, so the action is never emitted for this module today."
+  type        = bool
+  default     = false
 }
 
 variable "soft_delete_retention_days" {
@@ -180,7 +186,7 @@ variable "silver_cool_after_days" {
 }
 
 variable "noncurrent_version_delete_after_days" {
-  description = "Days after which noncurrent versions/snapshots are deleted."
+  description = "Days after which noncurrent versions/snapshots are deleted (only applied when versioning/snapshot cleanup is enabled and supported)."
   type        = number
   default     = 90
 }
