@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-lint:
+    name: python lint + format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: make -f mk/quality.mk test
+
+  sqlfluff:
+    name: sqlfluff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: sqlfluff lint .
+
+  tf-discover:
+    name: discover terraform dirs
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.find.outputs.dirs }}
+      any: ${{ steps.find.outputs.any }}
+      has_tf: ${{ steps.find.outputs.has_tf }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: .github/scripts/tf-discover.sh
+
+  terraform:
+    name: terraform (${{ matrix.dir }})
+    needs: tf-discover
+    if: needs.tf-discover.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJson(needs.tf-discover.outputs.dirs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+      - run: terraform fmt -check -recursive
+        working-directory: ${{ matrix.dir }}
+      - run: terraform init -backend=false -input=false
+        working-directory: ${{ matrix.dir }}
+      - run: terraform validate
+        working-directory: ${{ matrix.dir }}
+
+  checkov:
+    name: checkov (non-blocking)
+    needs: tf-discover
+    if: needs.tf-discover.outputs.has_tf == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bridgecrewio/checkov-action@v12.3139.0
+        continue-on-error: true
+        with:
+          directory: infra
+          framework: terraform
+          soft_fail: true
+
+  terraform-gate:
+    name: terraform (gate)
+    needs: [tf-discover, terraform]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pass on success, or skipped because there is no terraform; fail if .tf exists but nothing was validated
+        env:
+          RESULT: ${{ needs.terraform.result }}
+          DISCOVER: ${{ needs.tf-discover.result }}
+          ANY: ${{ needs.tf-discover.outputs.any }}
+          HAS_TF: ${{ needs.tf-discover.outputs.has_tf }}
+        run: |
+          echo "discover=$DISCOVER terraform=$RESULT any=$ANY has_tf=$HAS_TF"
+          [ "$DISCOVER" = "success" ] || { echo "::error::discovery failed"; exit 1; }
+          if [ "$HAS_TF" = "true" ] && [ "$ANY" != "true" ]; then
+            echo "::error::infra/ has .tf files but none under infra/*/envs/* or infra/*/modules/*; nothing was validated"
+            exit 1
+          fi
+          [ "$RESULT" = "success" ] || [ "$RESULT" = "skipped" ]
