@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.terraform/
+*.tfstate*
+*.tfvars
+!*.tfvars.example
+.env
+.DS_Store
+data/
+spark-warehouse/
+target/
+dbt_packages/
