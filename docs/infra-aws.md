@@ -119,3 +119,7 @@ CI has no AWS credentials, so tests are:
 Follow-ups: tflint and checkov in CI (acceptance criteria on #18), and
 switching to native `terraform test` with `mock_provider` once the minimum
 version moves to 1.7+.
+
+## Cross-cloud output contract
+
+The module also emits `layer_uris` (`s3a://<bucket>/` per layer) and `principals` (persona to `{id, principal_id}`, both the role ARN). `envs/dev` passes them through `infra/shared/modules/lakehouse_contract`, the same adapter the Azure env uses. See [multi-cloud.md](multi-cloud.md).

@@ -44,4 +44,13 @@ need "TLS deny on every bucket policy" 'DenyInsecureTransport' main.tf
 [ "$(grep -c 'aws:SecureTransport' "$M/main.tf")" -ge 2 ] && echo "ok   TLS deny in logs + data policies" || { echo "FAIL TLS deny count"; fail=1; }
 forbid "KMS rotation not disabled"     'enable_key_rotation[[:space:]]*=[[:space:]]*false' main.tf
 need "object lock is opt-in (default false)" 'gold_object_lock_enabled' main.tf
+# --- cross-cloud output contract (issue #20) ---
+need "contract output layer_uris (s3a)"  'output "layer_uris"' outputs.tf
+need "layer_uris uses s3a scheme"        's3a://' outputs.tf
+need "contract output principals"        'output "principals"' outputs.tf
+C="$(cd "$M/../../../shared/modules/lakehouse_contract" && pwd)"
+for f in main.tf variables.tf outputs.tf versions.tf; do
+  [ -f "$C/$f" ] && echo "ok   contract module has $f" || { echo "FAIL contract module missing $f"; fail=1; }
+done
+if grep -Eq '^resource ' "$C"/*.tf; then echo "FAIL contract module must not create resources"; fail=1; else echo "ok   contract module is resource-free"; fi
 exit $fail

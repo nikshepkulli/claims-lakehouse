@@ -22,3 +22,12 @@ module "lakehouse_storage" {
   key_admin_arns           = var.key_admin_arns
   gold_object_lock_enabled = var.gold_object_lock_enabled
 }
+
+# Output contract shared with the Azure env: same keys and shapes on both clouds.
+module "contract" {
+  source = "../../../shared/modules/lakehouse_contract"
+
+  cloud      = "aws"
+  layer_uris = module.lakehouse_storage.layer_uris
+  principals = module.lakehouse_storage.principals
+}

@@ -1,0 +1,14 @@
+# Local dev: the docker-compose MinIO is the S3 stand-in, so the s3a:// path is exercised
+# without an AWS account. Credentials are read from MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
+# at runtime (see .env.example); nothing secret is stored here.
+environment: local
+storage:
+  cloud: aws
+  aws:
+    buckets:
+      bronze: bronze
+      silver: silver
+      gold: gold
+    endpoint: http://localhost:9000
+    path_style_access: true
+    credentials: env_keys
