@@ -63,9 +63,11 @@ services:
       - --overprovisioned
       - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:${REDPANDA_KAFKA_PORT:-19092}
+      - --schema-registry-addr=0.0.0.0:8081
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${REDPANDA_KAFKA_PORT:-19092}:19092"
       - "${BIND_ADDR:-127.0.0.1}:${REDPANDA_ADMIN_PORT:-9644}:9644"
+      - "${BIND_ADDR:-127.0.0.1}:${REDPANDA_SCHEMA_REGISTRY_PORT:-18081}:8081"
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:

@@ -4,3 +4,6 @@ sqlfluff==3.3.0
 
 # claimsgen runtime deps (tests import them)
 -r requirements-claimsgen.txt
+
+# streaming ingest deps (tests import them)
+-r requirements-streaming.txt
