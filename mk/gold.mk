@@ -15,10 +15,13 @@ gold-dbt: dbt/profiles.yml ## dbt build on DuckDB against the REAL gold export (
 	GOLD_PATH=$(GOLD)/export $(DBT) build --target $(DBT_TARGET)
 
 E2E ?= data/e2e
-pipeline-e2e: ## claimsgen -> bronze -> silver -> gold -> dbt on a small fixture (2000 claims, 14 days)
+E2E_DS ?= claims,claim_lines,diagnoses,members,providers
+pipeline-e2e: ## claimsgen -> bronze -> silver -> gold -> dbt (+ end-to-end checks), 2000 claims in 3 batches
 	rm -rf $(E2E)
-	PYTHONPATH=src python -m claimsgen --rows 2000 --days 14 --seed 42 --out $(E2E)/raw --overwrite --quiet
-	$(MAKE) bronze RAW=$(E2E)/raw BRONZE=$(E2E)/bronze
-	$(MAKE) silver BRONZE=$(E2E)/bronze SILVER=$(E2E)/silver
-	$(MAKE) gold SILVER=$(E2E)/silver GOLD=$(E2E)/gold
+	PYTHONPATH=src python -m claimsgen --rows 2000 --seed 42 --out $(E2E)/raw --overwrite --quiet
+	python scripts/bucket_raw_batches.py --raw $(E2E)/raw --out $(E2E)/raw_batched --batches 3
+	$(call SPARK_RUN,python3 -m lakehouse.bronze --input $(E2E)/raw_batched --bronze $(E2E)/bronze --batch-date all --datasets $(E2E_DS))
+	$(call SPARK_RUN,python3 -m lakehouse.silver --bronze $(E2E)/bronze --silver $(E2E)/silver --batch-date all --datasets $(E2E_DS))
+	$(call SPARK_RUN,python3 -m lakehouse.gold --silver $(E2E)/silver --gold $(E2E)/gold --batch-date all)
 	$(MAKE) gold-dbt GOLD=$(E2E)/gold
+	$(call SPARK_RUN,GOLD_E2E_DIR=$(E2E) python3 -m pytest -m spark -p no:cacheprovider tests/gold/test_gold_pipeline_spark.py)

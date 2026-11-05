@@ -11,7 +11,8 @@ The data itself is unchanged, only the batch boundaries move, and the pipeline d
 on how many batches there are.
 
 ``events`` (one flat file, routed by event_ts) is not copied: gold does not read it. Run bronze
-and silver with ``--datasets claims,claim_lines,diagnoses,members,providers,notes``.
+and silver with ``--datasets claims,claim_lines,diagnoses,members,providers`` (``notes`` are
+copied too, for anyone who wants them).
 
 Usage:
     python scripts/bucket_raw_batches.py --raw data/raw --out data/raw_batched --batches 3
@@ -27,7 +28,7 @@ from pathlib import Path
 
 PARTITIONED = ("claims", "claim_lines", "diagnoses", "notes")
 DIMENSIONS = ("members", "providers")
-DATASETS_ARG = "claims,claim_lines,diagnoses,members,providers,notes"
+DATASETS_ARG = "claims,claim_lines,diagnoses,members,providers"
 
 
 def partition_dates(raw: Path) -> list[str]:

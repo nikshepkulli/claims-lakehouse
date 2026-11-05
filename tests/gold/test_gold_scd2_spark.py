@@ -1,8 +1,10 @@
-"""SCD2, surrogate keys, as-of fact resolution and reconciliation on hand-built silver (-m spark).
+"""SCD2, surrogate keys, as-of fact resolution and reconciliation on hand-built data (-m spark).
 
 The data generator emits ONE member/provider snapshot, so versioning cannot be proven from it.
-These tests build silver Delta tables by hand, including a changed second snapshot and a
-late-arriving one, and run the real gold job against them.
+These tests build snapshots by hand, including a changed second snapshot and a late-arriving
+one. The SCD2 / dimension tests call the merge functions directly (each Spark job costs ~0.1 s,
+so going through the whole batch job for every case would make the suite slow); the fact and
+reconciliation tests run the real ``gold_batch`` on hand-built silver Delta tables.
 """
 
 import hashlib
@@ -18,7 +20,9 @@ from pyspark.sql import functions as F  # noqa: E402
 
 from lakehouse.bronze.ingest import _write_replace as write_replace  # noqa: E402
 from lakehouse.gold import job  # noqa: E402
+from lakehouse.gold.dims import diagnosis_rows, ensure_dim_date, merge_diagnosis  # noqa: E402
 from lakehouse.gold.job import ReconciliationError, gold_batch  # noqa: E402
+from lakehouse.gold.scd2 import MEMBER, PROVIDER, scd2_merge  # noqa: E402
 from lakehouse.gold.schema import EPOCH  # noqa: E402
 
 pytestmark = pytest.mark.spark
@@ -84,6 +88,20 @@ def lake(tmp_path):
     return str(tmp_path / "silver"), str(tmp_path / "gold")
 
 
+def dim_uri(gold, name):
+    return f"{gold}/{name}"
+
+
+def merge_members(spark, gold, d, rows, run=RUN):
+    df = spark.createDataFrame(rows, MEM)
+    return scd2_merge(spark, dim_uri(gold, "dim_member"), MEMBER, df, d, f"b{d:%Y%m%d}", run)
+
+
+def merge_providers(spark, gold, d, rows, run=RUN):
+    df = spark.createDataFrame(rows, PRV)
+    return scd2_merge(spark, dim_uri(gold, "dim_provider"), PROVIDER, df, d, f"b{d:%Y%m%d}", run)
+
+
 def versions(spark, gold, mid):
     return [
         r.asDict()
@@ -105,17 +123,17 @@ def load_dims(spark, silver, gold, d, members, run=RUN, providers=None):
 
 
 def test_surrogate_keys_follow_the_documented_scheme(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1")], providers=[provider("P1")])
+    _, gold = lake
+    merge_members(spark, gold, D1, [member("M1")])
+    merge_providers(spark, gold, D1, [provider("P1")])
     (v,) = versions(spark, gold, "M1")
     assert v["member_sk"] == sk("member", "M1", "1900-01-01 00:00:00")
     (p,) = tbl(spark, gold, "dim_provider").collect()
     assert p["provider_sk"] == sk("provider", "P1", "1900-01-01 00:00:00")
-    put(spark, silver, "diagnoses", [("C1", 1, "I10", "PRIMARY")], DX, D1)
-    gold_batch(spark, silver, gold, D1, run_ts=RUN)
-    (dx,) = tbl(spark, gold, "dim_diagnosis").collect()
-    assert dx["diagnosis_sk"] == sk("diagnosis", "I10")
-    assert len(dx["diagnosis_sk"]) == 64
+    dx = spark.createDataFrame([("C1", 1, "I10", "PRIMARY")], DX)
+    merge_diagnosis(spark, dim_uri(gold, "dim_diagnosis"), diagnosis_rows(spark, dx, "b1", RUN))
+    (row,) = tbl(spark, gold, "dim_diagnosis").collect()
+    assert row["diagnosis_sk"] == sk("diagnosis", "I10") and len(row["diagnosis_sk"]) == 64
 
 
 def test_key_derivation_is_isolated_in_keys_module():
@@ -133,20 +151,21 @@ def test_key_derivation_is_isolated_in_keys_module():
 
 
 def test_first_load_opens_one_version_from_epoch(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1"), member("M2")])
+    _, gold = lake
+    r = merge_members(spark, gold, D1, [member("M1"), member("M2")])
+    assert (r.snapshot_keys, r.versions_inserted, r.versions_updated) == (2, 2, 0)
     for mid in ("M1", "M2"):
         (v,) = versions(spark, gold, mid)
         assert v["effective_from"] == EPOCH and v["effective_to"] is None and v["is_current"]
-        assert (
-            v["load_batch_id"] == "b20240101" and v["record_hash"] and len(v["record_hash"]) == 64
-        )
+        assert v["load_batch_id"] == "b20240101" and len(v["record_hash"]) == 64
 
 
 def test_changed_second_snapshot_closes_old_and_opens_new_version(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1", "HMO"), member("M2", "PPO")])
-    r = load_dims(spark, silver, gold, D2, [member("M1", "PPO"), member("M2", "PPO")], RUN2)
+    _, gold = lake
+    merge_members(spark, gold, D1, [member("M1", "HMO"), member("M2", "PPO")])
+    r = merge_members(spark, gold, D2, [member("M1", "PPO"), member("M2", "PPO")], RUN2)
+    assert (r.versions_inserted, r.versions_updated, r.versions_removed) == (1, 1, 0)
+    assert [x[0] for x in r.changed_keys.collect()] == ["M1"]  # only M1's history moved
     v1, v2 = versions(spark, gold, "M1")
     assert (v1["plan_type"], v1["effective_from"], v1["effective_to"], v1["is_current"]) == (
         "HMO",
@@ -164,28 +183,28 @@ def test_changed_second_snapshot_closes_old_and_opens_new_version(spark, lake):
     assert v2["load_batch_id"] == "b20240201" and v2["loaded_at"] == RUN2
     assert len(versions(spark, gold, "M2")) == 1  # unchanged member: no new version
     assert tbl(spark, gold, "dim_member").count() == 3
-    dim = next(x for x in r if x.gold_table == "dim_member")
-    assert dim.identity_ok and dim.silver_rows == 2
 
 
 def test_rerun_and_replay_change_nothing(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1", "HMO")])
-    load_dims(spark, silver, gold, D2, [member("M1", "PPO")], RUN)
+    _, gold = lake
+    s1, s2 = [member("M1", "HMO")], [member("M1", "PPO")]
+    merge_members(spark, gold, D1, s1)
+    merge_members(spark, gold, D2, s2)
     before = sorted(tbl(spark, gold, "dim_member").collect(), key=lambda r: r.effective_from)
-    load_dims(spark, silver, gold, D2, [member("M1", "PPO")], RUN2)  # same batch again
-    gold_batch(spark, silver, gold, D1, run_ts=RUN2)  # replay the OLDER batch afterwards
+    r = merge_members(spark, gold, D2, s2, RUN2)  # same batch again
+    assert not r.changed and r.changed_keys.count() == 0
+    merge_members(spark, gold, D1, s1, RUN2)  # replay the OLDER batch afterwards
     after = sorted(tbl(spark, gold, "dim_member").collect(), key=lambda r: r.effective_from)
     assert before == after  # incl. loaded_at / load_batch_id of untouched versions
 
 
 def test_late_arriving_snapshot_is_inserted_into_the_middle(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1", "HMO")])
-    load_dims(spark, silver, gold, D3, [member("M1", "EPO")])
+    _, gold = lake
+    merge_members(spark, gold, D1, [member("M1", "HMO")])
+    merge_members(spark, gold, D3, [member("M1", "EPO")])
     sk_before = {r["effective_from"]: r["member_sk"] for r in versions(spark, gold, "M1")}
     # a snapshot dated D2 arrives after D3 was loaded: the member was PPO in February
-    load_dims(spark, silver, gold, D2, [member("M1", "PPO")], RUN2)
+    merge_members(spark, gold, D2, [member("M1", "PPO")], RUN2)
     vs = versions(spark, gold, "M1")
     assert [(v["plan_type"], v["effective_from"]) for v in vs] == [
         ("HMO", EPOCH),
@@ -198,40 +217,55 @@ def test_late_arriving_snapshot_is_inserted_into_the_middle(spark, lake):
 
 
 def test_correction_at_an_existing_date_updates_in_place_and_keeps_the_key(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1", "HMO")])
-    load_dims(spark, silver, gold, D2, [member("M1", "PPO")])
+    _, gold = lake
+    merge_members(spark, gold, D1, [member("M1", "HMO")])
+    merge_members(spark, gold, D2, [member("M1", "PPO")])
     key_before = versions(spark, gold, "M1")[1]["member_sk"]
-    load_dims(spark, silver, gold, D2, [member("M1", "EPO")], RUN2)  # D2 snapshot corrected
+    merge_members(spark, gold, D2, [member("M1", "EPO")], RUN2)  # the D2 snapshot was wrong
     vs = versions(spark, gold, "M1")
     assert [v["plan_type"] for v in vs] == ["HMO", "EPO"]
     assert vs[1]["member_sk"] == key_before and vs[1]["loaded_at"] == RUN2
 
 
 def test_correction_equal_to_neighbour_collapses_the_version(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1", "HMO")])
-    load_dims(spark, silver, gold, D2, [member("M1", "PPO")])
-    r = load_dims(spark, silver, gold, D2, [member("M1", "HMO")], RUN2)  # D2 was an error
+    _, gold = lake
+    merge_members(spark, gold, D1, [member("M1", "HMO")])
+    merge_members(spark, gold, D2, [member("M1", "PPO")])
+    r = merge_members(spark, gold, D2, [member("M1", "HMO")], RUN2)  # D2 was an error
+    assert r.versions_removed == 1
     (v,) = versions(spark, gold, "M1")
     assert (v["plan_type"], v["effective_to"], v["is_current"]) == ("HMO", None, True)
-    assert next(x for x in r if x.gold_table == "dim_member").identity_ok
 
 
 def test_snapshot_with_duplicate_keys_is_rejected(spark, lake):
-    silver, gold = lake
-    put(spark, silver, "members", [member("M1", "HMO"), member("M1", "PPO")], MEM, D1)
+    _, gold = lake
     with pytest.raises(ValueError, match="several rows"):
-        gold_batch(spark, silver, gold, D1, run_ts=RUN)
+        merge_members(spark, gold, D1, [member("M1", "HMO"), member("M1", "PPO")])
+
+
+def test_null_is_distinct_from_the_empty_string(spark, lake):
+    _, gold = lake
+    merge_members(spark, gold, D1, [("M1", 1980, "F", "KA", "", date(2020, 1, 1))])
+    r = merge_members(spark, gold, D2, [("M1", 1980, "F", "KA", None, date(2020, 1, 1))])
+    assert r.versions_inserted == 1  # '' -> NULL is a real change
 
 
 def test_provider_dimension_is_scd2_too(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1")], providers=[provider("P1", "STANDARD")])
-    put(spark, silver, "providers", [provider("P1", "HIGH_COST")], PRV, D2)
-    gold_batch(spark, silver, gold, D2, run_ts=RUN2)
+    _, gold = lake
+    merge_providers(spark, gold, D1, [provider("P1", "STANDARD")])
+    merge_providers(spark, gold, D2, [provider("P1", "HIGH_COST")])
     rows = tbl(spark, gold, "dim_provider").orderBy("effective_from").collect()
     assert [(r.cost_tier, r.is_current) for r in rows] == [("STANDARD", False), ("HIGH_COST", True)]
+
+
+def test_job_records_dimension_reconciliation_for_each_snapshot(spark, lake):
+    silver, gold = lake
+    load_dims(spark, silver, gold, D1, [member("M1", "HMO")], providers=[provider("P1")])
+    r = load_dims(spark, silver, gold, D2, [member("M1", "PPO")], RUN2)
+    dim = next(x for x in r if x.gold_table == "dim_member")
+    assert dim.identity_ok and dim.silver_rows == dim.gold_rows == 1 and dim.key_violations == 0
+    rec = tbl(spark, gold, "gold_reconciliation").where("gold_table = 'dim_member'")
+    assert rec.count() == 2 and rec.where("NOT identity_ok").count() == 0
 
 
 # ---------------------------------------- facts
@@ -381,11 +415,10 @@ def test_fact_batch_rerun_is_idempotent_and_isolated(spark, lake):
 
 
 def test_dim_date_is_a_full_calendar_over_the_data_window(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1")], providers=[provider("P1")])
-    svc = date(2024, 3, 9)
-    seed_claims(spark, silver, D2, [claim("C1", "M1", "P1", svc)], [line("C1", 1, svc)])
-    gold_batch(spark, silver, gold, D2, run_ts=RUN)
+    _, gold = lake
+    uri = dim_uri(gold, "dim_date")
+    assert ensure_dim_date(spark, uri, date(2024, 3, 9), date(2024, 5, 1))
+    assert not ensure_dim_date(spark, uri, date(2024, 3, 9), date(2024, 5, 1))  # nothing to do
     dd = tbl(spark, gold, "dim_date")
     assert dd.count() == 366 and dd.select("date_key").distinct().count() == 366  # leap year 2024
     assert dd.agg(F.min("full_date"), F.max("full_date")).first() == (
@@ -399,45 +432,28 @@ def test_dim_date_is_a_full_calendar_over_the_data_window(spark, lake):
 
 
 def test_dim_date_widens_for_a_late_claim_and_never_shrinks(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1")], providers=[provider("P1")])
-    s = date(2024, 5, 5)
-    seed_claims(spark, silver, D2, [claim("C1", "M1", "P1", s)], [line("C1", 1, s)])
-    gold_batch(spark, silver, gold, D2, run_ts=RUN)
-    old = date(2023, 11, 20)  # service date in an earlier year, received late
-    seed_claims(spark, silver, D3, [claim("C2", "M1", "P1", old)], [line("C2", 1, old)])
-    gold_batch(spark, silver, gold, D3, run_ts=RUN)
+    _, gold = lake
+    uri = dim_uri(gold, "dim_date")
+    ensure_dim_date(spark, uri, date(2024, 5, 5), date(2024, 5, 6))
+    assert ensure_dim_date(spark, uri, date(2023, 11, 20), date(2023, 11, 25))  # earlier year
     dd = tbl(spark, gold, "dim_date")
     assert dd.agg(F.min("full_date"), F.max("full_date")).first() == (
         date(2023, 1, 1),
         date(2024, 12, 31),
     )
     assert dd.count() == 365 + 366
-    gold_batch(spark, silver, gold, D2, run_ts=RUN)  # replaying the narrower batch keeps it
+    assert not ensure_dim_date(spark, uri, date(2024, 5, 5), date(2024, 5, 6))  # narrower: keep
     assert tbl(spark, gold, "dim_date").count() == 365 + 366
 
 
 def test_dim_diagnosis_is_an_idempotent_type1_upsert(spark, lake):
-    silver, gold = lake
-    put(
-        spark,
-        silver,
-        "diagnoses",
-        [("C1", 1, "I10", "PRIMARY"), ("C1", 2, "ZZ9", "SECONDARY")],
-        DX,
-        D1,
-    )
-    gold_batch(spark, silver, gold, D1, run_ts=RUN)
-    put(
-        spark,
-        silver,
-        "diagnoses",
-        [("C2", 1, "I10", "PRIMARY"), ("C2", 2, "E11.9", "SECONDARY")],
-        DX,
-        D2,
-    )
-    gold_batch(spark, silver, gold, D2, run_ts=RUN2)
-    gold_batch(spark, silver, gold, D2, run_ts=RUN2)
+    _, gold = lake
+    uri = dim_uri(gold, "dim_diagnosis")
+    d1 = spark.createDataFrame([("C1", 1, "I10", "PRIMARY"), ("C1", 2, "ZZ9", "SECONDARY")], DX)
+    d2 = spark.createDataFrame([("C2", 1, "I10", "PRIMARY"), ("C2", 2, "E11.9", "SECONDARY")], DX)
+    assert merge_diagnosis(spark, uri, diagnosis_rows(spark, d1, "b20240101", RUN)) == 2
+    assert merge_diagnosis(spark, uri, diagnosis_rows(spark, d2, "b20240201", RUN2)) == 1
+    assert merge_diagnosis(spark, uri, diagnosis_rows(spark, d2, "b20240201", RUN2)) == 0
     rows = {r.icd10_code: r for r in tbl(spark, gold, "dim_diagnosis").collect()}
     assert set(rows) == {"I10", "ZZ9", "E11.9"}
     assert rows["I10"].load_batch_id == "b20240101"  # first seen, not rewritten
@@ -445,14 +461,40 @@ def test_dim_diagnosis_is_an_idempotent_type1_upsert(spark, lake):
     assert rows["ZZ9"].description == "Synthetic ICD-10 code"
 
 
-# ---------------------------------------- maintenance
+# ---------------------------------------- maintenance and CLI
 
 
 def test_optimize_and_vacuum_hooks(spark, lake):
-    silver, gold = lake
-    load_dims(spark, silver, gold, D1, [member("M1")], providers=[provider("P1")])
-    assert job._tables(gold, spark)[:3] == ["dim_date", "dim_member", "dim_provider"]
-    assert job.optimize_tables(spark, gold, ["dim_member"]) == ["dim_member"]
-    assert job.vacuum_tables(spark, gold, tables=["dim_member"]) == ["dim_member"]
+    _, gold = lake
+    ensure_dim_date(spark, dim_uri(gold, "dim_date"), date(2024, 1, 1), date(2024, 1, 2))
+    assert job._tables(gold, spark) == ["dim_date"]
+    assert job.optimize_tables(spark, gold) == ["dim_date"]
+    assert job.vacuum_tables(spark, gold) == ["dim_date"]
     with pytest.raises(ValueError, match="168"):
         job.vacuum_tables(spark, gold, retention_hours=1)
+
+
+def test_cli_fails_loudly_and_skips_export_when_a_dimension_is_missing(spark, lake):
+    """Claims whose members were never loaded: exit 1, numbers recorded, nothing exported."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    silver, gold = lake
+    svc = date(2024, 1, 10)
+    put(spark, silver, "providers", [provider("P1")], PRV, D1)
+    seed_claims(spark, silver, D2, [claim("C1", "M1", "P1", svc)], [line("C1", 1, svc)])
+    src = Path(job.__file__).resolve().parents[2]
+    r = subprocess.run(
+        [sys.executable, "-m", "lakehouse.gold", "--silver", silver, "--gold", gold,
+         "--batch-date", "all"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join([str(src), os.environ.get("PYTHONPATH", "")])},  # noqa: E501
+    )  # fmt: skip
+    assert r.returncode == 1 and "RECONCILIATION FAILED" in r.stderr
+    assert "unresolved_dimension_claims" in r.stderr
+    assert not (Path(gold) / "export").exists()
+    rec = tbl(spark, gold, "gold_reconciliation").where("gold_table = 'fact_claim'").first()
+    assert not rec.identity_ok

@@ -9,7 +9,7 @@ failure points at one cause.
 | `python lint + format` | `ruff check .` and `ruff format --check .` |
 | `pytest` | `make -f mk/quality.mk test` |
 | `spark tests (<suite>)` | One parallel job per layer (`bronze`, `silver`, `gold`): `pytest -m spark tests/<suite>` on Java 17 + PySpark/Delta |
-| `pipeline e2e` | claimsgen (2000 claims) -> bronze -> silver -> gold on Spark/Delta, then `dbt build --target duckdb` pointed at the **real** gold Parquet export (`--vars gold_path`). Fails if any stage, reconciliation or dbt test fails. See [gold.md](gold.md), [dbt.md](dbt.md). |
+| `pipeline e2e` | claimsgen (2000 claims) -> bronze -> silver -> gold on Spark/Delta, then `dbt build --target duckdb` pointed at the **real** gold Parquet export (`--vars gold_path`). Then runs `tests/gold/test_gold_pipeline_spark.py` against the output. Fails if any stage, reconciliation, dbt test or check fails. See [gold.md](gold.md), [dbt.md](dbt.md). |
 | `sqlfluff` | `sqlfluff lint .` (dialect `sparksql`, see `.sqlfluff`) |
 | `discover terraform dirs` | Runs `.github/scripts/tf-discover.sh`; emits the JSON matrix of terraform roots |
 | `terraform (<dir>)` | Per directory (Terraform 1.5.7): `terraform fmt -check -recursive`, `init -backend=false`, `validate`. Skipped when no roots are found. |

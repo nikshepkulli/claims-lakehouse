@@ -72,7 +72,8 @@ jobs:
     timeout-minutes: 20
     env:
       E2E: data/e2e
-      DATASETS: claims,claim_lines,diagnoses,members,providers,notes
+      DATASETS: claims,claim_lines,diagnoses,members,providers
+      GOLD_E2E_DIR: data/e2e
       DBT_PROFILES_DIR: dbt
       DBT_DUCKDB_PATH: data/e2e/claims.duckdb
       PYTHONPATH: src
@@ -105,6 +106,8 @@ jobs:
           cp dbt/profiles.yml.example dbt/profiles.yml
           dbt deps --project-dir dbt
           dbt build --project-dir dbt --target duckdb --vars "{gold_path: $E2E/gold/export}"
+      - name: end-to-end checks on the real output (reconciliation, quarantine, keys, export)
+        run: pytest -m spark -p no:cacheprovider tests/gold/test_gold_pipeline_spark.py
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

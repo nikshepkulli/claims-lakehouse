@@ -1,17 +1,19 @@
-"""claimsgen -> bronze -> silver -> gold on a 2000-claim fixture, with the real code (-m spark).
+"""Checks on the REAL end-to-end output: claimsgen -> bronze -> silver -> gold (-m spark).
 
-Checks what must hold on the generator's defect-laden data: gold equals the Snowflake DDL,
-silver reconciles to gold, nothing quarantined or orphaned reaches gold, every key resolves, and
-the CLI run is idempotent and exports Parquet. The fixture's ~370 daily partitions are merged
-into 3 bronze batches (scripts/bucket_raw_batches.py) to keep the suite fast.
+These run in the ``pipeline e2e`` CI job, after the three layers have been built on the
+2000-claim fixture (3 merged batches, scripts/bucket_raw_batches.py), and are skipped everywhere
+else (the build takes minutes, so the Spark test legs do not repeat it). Locally:
+
+    make pipeline-e2e E2E=data/e2e                       # builds the layers, runs dbt
+    GOLD_E2E_DIR=data/e2e pytest -m spark tests/gold/test_gold_pipeline_spark.py
+
+They check what must hold on the generator's defect-laden data: gold equals the Snowflake DDL,
+silver reconciles to gold, nothing quarantined or orphaned reaches gold, every key resolves,
+re-running every batch changes nothing, and the Parquet export equals the Delta tables.
 """
 
-import importlib.util
 import json
 import os
-import subprocess
-import sys
-from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,59 +25,28 @@ pytest.importorskip("delta")
 
 from pyspark.sql import functions as F  # noqa: E402
 
-from lakehouse.bronze.ingest import ingest_batch  # noqa: E402
 from lakehouse.gold.job import gold_batch, silver_batch_dates  # noqa: E402
 from lakehouse.gold.schema import EPOCH, TABLES  # noqa: E402
-from lakehouse.silver.job import silver_batch  # noqa: E402
 
 pytestmark = pytest.mark.spark
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-RUN_TS = datetime(2025, 1, 1, 12, 0, 0)
-DIMS_DAY = date(2024, 1, 1)
-DATASETS = ["claims", "claim_lines", "diagnoses", "members", "providers", "notes"]
-FACT_TABLES = ("fact_claim", "fact_claim_line")
-
-
-def _bucket_module():
-    spec = importlib.util.spec_from_file_location(
-        "bucket_raw_batches", ROOT / "scripts" / "bucket_raw_batches.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+E2E = os.environ.get("GOLD_E2E_DIR")
 
 
 @pytest.fixture(scope="module")
-def pipeline(spark, tmp_path_factory):
-    work = tmp_path_factory.mktemp("lake")
-    raw = work / "raw"
-    subprocess.run(
-        [sys.executable, "-m", "claimsgen", "--rows", "2000", "--seed", "42", "--out", str(raw),
-         "--overwrite", "--quiet"],
-        check=True,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join([str(SRC), os.environ.get("PYTHONPATH", "")])},  # noqa: E501
-    )  # fmt: skip
-    batched = work / "batched"
-    starts = _bucket_module().bucket(raw, batched, 3)
-    bronze, silver, gold = (str(work / n) for n in ("bronze", "silver", "gold"))
-    ingest_batch(spark, batched, bronze, DIMS_DAY, ["members", "providers"], RUN_TS)
-    for d in starts:
-        ingest_batch(
-            spark, batched, bronze, d, ["claims", "claim_lines", "diagnoses", "notes"], RUN_TS
-        )
-    for d in sorted({DIMS_DAY, *starts}):
-        silver_batch(spark, bronze, silver, d, DATASETS, run_ts=RUN_TS)
-    dates = silver_batch_dates(spark, silver)
-    results = {d: gold_batch(spark, silver, gold, d, run_ts=RUN_TS) for d in dates}
+def pipeline(spark):
+    if not E2E:
+        pytest.skip("GOLD_E2E_DIR not set: run via the `pipeline e2e` CI job or make pipeline-e2e")
+    root = Path(E2E).resolve()
 
     class P:
         pass
 
     p = P()
-    p.spark, p.raw, p.silver, p.gold, p.dates, p.results = spark, raw, silver, gold, dates, results
-    p.manifest = json.loads((raw / "defects_manifest.json").read_text())
+    p.spark, p.silver, p.gold = spark, str(root / "silver"), str(root / "gold")
+    p.dates = silver_batch_dates(spark, p.silver)
+    p.manifest = json.loads((root / "raw" / "defects_manifest.json").read_text())
+    assert len(p.dates) >= 2, "expected a dimension batch and at least one claims batch"
     return p
 
 
@@ -114,7 +85,6 @@ def test_string_values_fit_the_ddl_varchar_lengths(pipeline, table):
 
 def test_every_batch_reconciles_and_is_recorded(pipeline):
     p = pipeline
-    assert all(r.identity_ok for rs in p.results.values() for r in rs)
     rec = g(p, "gold_reconciliation")
     assert rec.count() > 0 and rec.where("NOT identity_ok").count() == 0
     assert rec.where("key_violations != 0").count() == 0
@@ -303,43 +273,16 @@ def test_rerunning_every_batch_is_idempotent(pipeline):
     assert {n: content(p, n) for n in names} == before  # same rows, nothing duplicated
 
 
-def run_cli(*args):
-    return subprocess.run(
-        [sys.executable, "-m", "lakehouse.gold", *args],
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PYTHONPATH": os.pathsep.join([str(SRC), os.environ.get("PYTHONPATH", "")]),
-        },  # noqa: E501
-    )
-
-
-def test_cli_exports_parquet_with_the_ddl_schema_and_runs_maintenance(pipeline):
+@pytest.mark.parametrize("table", sorted(TABLES))
+def test_parquet_export_equals_the_delta_table_and_the_ddl(pipeline, table):
+    """The export is what dbt/DuckDB and Snowflake COPY read: same rows, same contract types."""
     p = pipeline
-    counts = {n: g(p, n).count() for n in TABLES}
-    r = run_cli("--silver", p.silver, "--gold", p.gold, "--batch-date", str(p.dates[-1]),
-                "--optimize", "--vacuum")  # fmt: skip
-    assert r.returncode == 0, r.stderr[-3000:]
-    assert "exported:" in r.stdout and "optimized:" in r.stdout and "vacuumed:" in r.stdout
-    for n, rows in counts.items():
-        out = p.spark.read.parquet(f"{p.gold}/export/{n}")
-        assert out.count() == rows, n
-        # the export carries the contract types too (what DuckDB / Snowflake COPY will read)
-        assert [(f.name, f.dataType.simpleString()) for f in out.schema] == [
-            (c, t) for c, t, _ in ddl_contract()[n]
-        ]
-
-
-def test_cli_fails_loudly_and_skips_export_when_silver_is_missing_a_dimension(pipeline, tmp_path):
-    """Claims whose members were never loaded: non-zero exit, nothing exported."""
-    p = pipeline
-    day = p.dates[1]  # first claims batch
-    silver = tmp_path / "silver"
-    for name in ("claims", "claim_lines", "diagnoses", "providers"):
-        df = s(p, name).where(F.col("_ingest_date") == F.lit(day))
-        df.write.format("delta").partitionBy("_ingest_date").save(str(silver / name))
-    r = run_cli("--silver", str(silver), "--gold", str(tmp_path / "gold"), "--batch-date", str(day))
-    assert r.returncode == 1 and "RECONCILIATION FAILED" in r.stderr
-    assert "unresolved_dimension_claims" in r.stderr
-    assert not (tmp_path / "gold" / "export").exists()
+    out = p.spark.read.parquet(f"{p.gold}/export/{table}")
+    assert [(f.name, f.dataType.simpleString()) for f in out.schema] == [
+        (c, t) for c, t, _ in ddl_contract()[table]
+    ]
+    delta_rows = g(p, table)
+    assert out.count() == delta_rows.count() > 0
+    # loaded_at is a run timestamp: the idempotency test re-runs batches after the export
+    cols = [c for c in out.columns if c != "loaded_at"]
+    assert out.select(*cols).exceptAll(delta_rows.select(*cols)).count() == 0
