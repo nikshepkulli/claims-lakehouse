@@ -42,5 +42,10 @@ updates:
       - "/infra/*/modules/*"
     schedule: {interval: weekly}
     open-pull-requests-limit: 3
+    # CI can init/validate but never plan, so provider majors cannot be verified; upgrade
+    # them deliberately with a reviewed plan.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       terraform: {patterns: ["*"]}
