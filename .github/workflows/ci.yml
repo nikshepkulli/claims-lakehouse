@@ -59,15 +59,11 @@ jobs:
     outputs:
       dirs: ${{ steps.find.outputs.dirs }}
       any: ${{ steps.find.outputs.any }}
+      has_tf: ${{ steps.find.outputs.has_tf }}
     steps:
       - uses: actions/checkout@v4
       - id: find
-        run: |
-          dirs=$(find infra -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | jq -R . | jq -sc .)
-          [ -z "$dirs" ] && dirs='[]'
-          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
-          if [ "$dirs" = '[]' ]; then echo "any=false" >> "$GITHUB_OUTPUT"; else echo "any=true" >> "$GITHUB_OUTPUT"; fi
-          echo "terraform dirs: $dirs"
+        run: .github/scripts/tf-discover.sh
 
   terraform:
     name: terraform (${{ matrix.dir }})
@@ -81,6 +77,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
       - run: terraform fmt -check -recursive
         working-directory: ${{ matrix.dir }}
       - run: terraform init -backend=false -input=false
@@ -88,14 +86,38 @@ jobs:
       - run: terraform validate
         working-directory: ${{ matrix.dir }}
 
+  checkov:
+    name: checkov (non-blocking)
+    needs: tf-discover
+    if: needs.tf-discover.outputs.has_tf == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bridgecrewio/checkov-action@v12.3139.0
+        continue-on-error: true
+        with:
+          directory: infra
+          framework: terraform
+          soft_fail: true
+
   terraform-gate:
     name: terraform (gate)
     needs: [tf-discover, terraform]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Pass if terraform passed or was skipped (no infra dirs)
+      - name: Pass on success, or skipped because there is no terraform; fail if .tf exists but nothing was validated
+        env:
+          RESULT: ${{ needs.terraform.result }}
+          DISCOVER: ${{ needs.tf-discover.result }}
+          ANY: ${{ needs.tf-discover.outputs.any }}
+          HAS_TF: ${{ needs.tf-discover.outputs.has_tf }}
         run: |
-          r="${{ needs.terraform.result }}"
-          echo "terraform result: $r"
-          [ "$r" = "success" ] || [ "$r" = "skipped" ]
+          echo "discover=$DISCOVER terraform=$RESULT any=$ANY has_tf=$HAS_TF"
+          [ "$DISCOVER" = "success" ] || { echo "::error::discovery failed"; exit 1; }
+          if [ "$HAS_TF" = "true" ] && [ "$ANY" != "true" ]; then
+            echo "::error::infra/ has .tf files but none under infra/*/envs/* or infra/*/modules/*; nothing was validated"
+            exit 1
+          fi
+          [ "$RESULT" = "success" ] || [ "$RESULT" = "skipped" ]
