@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 3
+    groups:
+      actions: {patterns: ["*"]}
+  - package-ecosystem: pip
+    directory: /
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 3
+    groups:
+      python-dev: {patterns: ["*"]}
+  - package-ecosystem: terraform
+    directories:
+      - "/infra/*/envs/*"
+      - "/infra/*/modules/*"
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 3
+    groups:
+      terraform: {patterns: ["*"]}

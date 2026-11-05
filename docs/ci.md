@@ -1,0 +1,46 @@
+# CI
+
+Workflow: `.github/workflows/ci.yml`. Runs on every pull request and on pushes to `main`
+(ubuntu-latest, Python 3.11, actions pinned to major tags, Terraform pinned to 1.5.7). Each check is its own job so a
+failure points at one cause.
+
+| Job | What it runs |
+| --- | --- |
+| `python lint + format` | `ruff check .` and `ruff format --check .` |
+| `pytest` | `make -f mk/quality.mk test` |
+| `sqlfluff` | `sqlfluff lint .` (dialect `sparksql`, see `.sqlfluff`) |
+| `discover terraform dirs` | Runs `.github/scripts/tf-discover.sh`; emits the JSON matrix of terraform roots |
+| `terraform (<dir>)` | Per directory (Terraform 1.5.7): `terraform fmt -check -recursive`, `init -backend=false`, `validate`. Skipped when no roots are found. |
+| `checkov (non-blocking)` | `bridgecrewio/checkov-action` (pinned tag) on `infra/`, `continue-on-error` and `soft_fail`: findings are visible, never block. Becomes blocking (drop both flags) once the baseline is clean. |
+| `terraform (gate)` | Single stable check name; passes when terraform succeeded or was skipped because there is no terraform. **Fails** if `infra/` contains any `*.tf` but discovery found no roots (nothing validated). Use this as the required status check, since matrix job names change as `infra/` grows. |
+
+## How terraform discovery works
+
+Roots are every directory matching `infra/*/envs/*` or `infra/*/modules/*` that directly contains
+`*.tf` files (e.g. `infra/aws/envs/dev`, `infra/azure/modules/storage`). Modules are validated
+standalone via `init -backend=false`. Top-level `infra/aws` or `infra/azure` are not roots, since
+they hold no `.tf` themselves and would validate vacuously. A `.tf` file placed anywhere else under
+`infra/` trips the gate. Test discovery locally: `cd <tree> && GITHUB_OUTPUT=/dev/stdout /path/to/.github/scripts/tf-discover.sh`.
+
+Dependabot (`.github/dependabot.yml`) updates github-actions, pip and terraform dirs weekly,
+grouped, max 3 open PRs per ecosystem.
+
+## Run locally
+
+```sh
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+make -f mk/quality.mk lint test   # fmt target auto-fixes
+```
+
+Terraform (per root): `terraform -chdir=infra/aws/envs/dev fmt -check -recursive && terraform -chdir=... init -backend=false && terraform -chdir=... validate`.
+Checkov: `pip install checkov && checkov -d infra --framework terraform --soft-fail`.
+Individual checks: `ruff check .`, `ruff format --check .`, `pytest`, `sqlfluff lint .`.
+
+Tool versions are pinned in `requirements-dev.txt`; ruff and pytest settings live in
+`pyproject.toml`.
+
+## Required status checks on `main`
+
+Branch protection is a repo setting, not code. Require: `python lint + format`, `pytest`,
+`sqlfluff`, `terraform (gate)`.
