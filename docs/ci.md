@@ -59,3 +59,4 @@ Branch protection is a repo setting, not code. Require: `python lint + format`, 
 - **numpy / pyarrow majors are ignored**: they can change generator output and compaction behaviour.
 - **ruff and sqlfluff form their own group**: lint-rule changes should be reviewed alone, never mixed with runtime bumps.
 - **Deploy-path action majors are ignored** (`aws-actions/configure-aws-credentials`, `azure/login`, artifact actions): the OIDC workflows are skipped in CI until a cloud is attached, so majors there are untestable. Bump manually when exercised.
+- **Terraform provider majors are ignored**: CI runs `init`/`validate` only, never `plan`, so a provider major (e.g. AWS provider 5 to 6) cannot be verified. Upgrade deliberately with a reviewed plan.
