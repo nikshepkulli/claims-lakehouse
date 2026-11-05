@@ -1,0 +1,230 @@
+version: 2
+
+# Staging: one view per gold source. Rename, cast, trim/upper, derive dates from
+# *_date_key. No joins, no filters: bad rows are not hidden here, they fail tests.
+models:
+  - name: stg_gold__dim_date
+    description: Calendar days. Staging of gold.dim_date.
+    columns:
+      - name: date_key
+        description: YYYYMMDD integer key.
+        data_tests: [unique, not_null]
+      - name: date_day
+        description: The calendar date.
+        data_tests: [unique, not_null]
+      - name: calendar_year
+        description: Calendar year.
+      - name: calendar_quarter
+        description: Calendar quarter, 1 to 4.
+      - name: calendar_month
+        description: Calendar month, 1 to 12.
+      - name: month_name
+        description: English month name.
+      - name: day_of_month
+        description: Day of month.
+      - name: day_of_week
+        description: ISO day of week, 1 (Monday) to 7 (Sunday).
+      - name: is_weekend
+        description: True for Saturday and Sunday.
+
+  - name: stg_gold__dim_member
+    description: Member versions (SCD2). One row per member version.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [member_id, valid_from]
+    columns:
+      - name: member_sk
+        description: Surrogate key of the version.
+        data_tests: [unique, not_null]
+      - name: member_id
+        description: Natural member id.
+        data_tests: [not_null]
+      - name: birth_year
+        description: Year of birth.
+      - name: sex
+        description: Upper-cased sex code.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [M, F]
+      - name: state_code
+        description: Upper-cased two-letter state.
+      - name: plan_type
+        description: Upper-cased plan type.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [HMO, PPO, EPO, HDHP, MEDICARE_ADV, MEDICAID_MCO]
+      - name: enrollment_date
+        description: Enrollment date.
+      - name: valid_from
+        description: Version start (inclusive).
+        data_tests: [not_null]
+      - name: valid_to
+        description: Version end (exclusive). Null when current.
+      - name: is_current
+        description: True on the latest version.
+        data_tests: [not_null]
+      - name: _loaded_at
+        description: Load timestamp from the source.
+
+  - name: stg_gold__dim_provider
+    description: Provider versions (SCD2). One row per provider version.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [provider_id, valid_from]
+    columns:
+      - name: provider_sk
+        description: Surrogate key of the version.
+        data_tests: [unique, not_null]
+      - name: provider_id
+        description: Natural provider id.
+        data_tests: [not_null]
+      - name: specialty
+        description: Trimmed specialty.
+      - name: state_code
+        description: Upper-cased two-letter state.
+      - name: network_status
+        description: Upper-cased network status.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [IN_NETWORK, OUT_OF_NETWORK]
+      - name: cost_tier
+        description: Upper-cased cost tier.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [STANDARD, ELEVATED, HIGH_COST]
+      - name: valid_from
+        description: Version start (inclusive).
+        data_tests: [not_null]
+      - name: valid_to
+        description: Version end (exclusive). Null when current.
+      - name: is_current
+        description: True on the latest version.
+        data_tests: [not_null]
+      - name: _loaded_at
+        description: Load timestamp from the source.
+
+  - name: stg_gold__dim_diagnosis
+    description: Valid ICD-10 codes.
+    columns:
+      - name: diagnosis_sk
+        description: Surrogate key.
+        data_tests: [unique, not_null]
+      - name: icd10_code
+        description: Upper-cased ICD-10 code.
+        data_tests: [unique, not_null]
+      - name: icd10_chapter
+        description: Chapter indicator.
+      - name: diagnosis_description
+        description: Fabricated description.
+      - name: _loaded_at
+        description: Load timestamp from the source.
+
+  - name: stg_gold__fact_claim
+    description: Claim headers, one row per claim, amounts as DECIMAL(12,2).
+    columns:
+      - name: claim_id
+        description: Claim id.
+        data_tests: [unique, not_null]
+      - name: member_sk
+        description: Member version valid on the service date.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_gold__dim_member')
+                field: member_sk
+      - name: provider_sk
+        description: Provider version valid on the service date.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_gold__dim_provider')
+                field: provider_sk
+      - name: primary_diagnosis_sk
+        description: Primary diagnosis, null when the code was quarantined.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_gold__dim_diagnosis')
+                field: diagnosis_sk
+      - name: service_date
+        description: Service date derived from service_date_key.
+        data_tests: [not_null]
+      - name: received_date
+        description: Received date derived from received_date_key.
+        data_tests: [not_null]
+      - name: claim_type
+        description: Claim type.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [PROFESSIONAL, INSTITUTIONAL, PHARMACY]
+      - name: place_of_service
+        description: Place-of-service code.
+      - name: claim_status
+        description: PAID or DENIED.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [PAID, DENIED]
+      - name: is_denied
+        description: True when claim_status is DENIED.
+        data_tests: [not_null]
+      - name: line_count
+        description: Lines on the claim per the header.
+        data_tests: [not_null]
+      - name: billed_amount
+        description: Billed total.
+        data_tests: [not_null]
+      - name: allowed_amount
+        description: Allowed total.
+        data_tests: [not_null]
+      - name: paid_amount
+        description: Paid total.
+        data_tests: [not_null]
+      - name: _loaded_at
+        description: Load timestamp from the source.
+
+  - name: stg_gold__fact_claim_line
+    description: Claim lines, one row per line, amounts as DECIMAL(12,2).
+    columns:
+      - name: line_id
+        description: Line id.
+        data_tests: [unique, not_null]
+      - name: claim_id
+        description: Parent claim.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_gold__fact_claim')
+                field: claim_id
+      - name: line_number
+        description: Line number within the claim.
+        data_tests: [not_null]
+      - name: procedure_code
+        description: Upper-cased procedure code.
+        data_tests: [not_null]
+      - name: units
+        description: Units of service.
+      - name: service_date
+        description: Service date derived from service_date_key.
+        data_tests: [not_null]
+      - name: billed_amount
+        description: Billed amount.
+        data_tests: [not_null]
+      - name: allowed_amount
+        description: Allowed amount.
+        data_tests: [not_null]
+      - name: paid_amount
+        description: Paid amount.
+        data_tests: [not_null]
+      - name: _loaded_at
+        description: Load timestamp from the source.

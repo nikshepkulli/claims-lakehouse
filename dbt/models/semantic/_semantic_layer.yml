@@ -1,0 +1,103 @@
+version: 2
+
+# Semantic layer (MetricFlow) definitions over mart_claims_monthly. They are YAML
+# definitions validated by `dbt parse`; querying them needs MetricFlow / a semantic
+# layer service, which this repo does not run. Metric SQL lives once, here.
+semantic_models:
+  - name: claims_monthly
+    description: Monthly claims utilisation and cost, one row per service month.
+    model: ref('mart_claims_monthly')
+    defaults:
+      agg_time_dimension: service_month
+    entities:
+      - name: service_month_key
+        type: primary
+        expr: month_key
+    dimensions:
+      - name: service_month
+        type: time
+        type_params:
+          time_granularity: month
+    measures:
+      - name: claim_count
+        description: Claims in the month.
+        agg: sum
+      - name: denied_claim_count
+        description: Denied claims in the month.
+        agg: sum
+      - name: line_count
+        description: Claim lines in the month.
+        agg: sum
+      - name: member_months
+        description: Enrolled members at month end (monthly denominator).
+        agg: sum
+      - name: paid_amount
+        description: Paid amount.
+        agg: sum
+      - name: allowed_amount
+        description: Allowed amount.
+        agg: sum
+      - name: readmission_proxy_count
+        description: Readmission proxy claims.
+        agg: sum
+
+metrics:
+  - name: total_paid
+    label: Total paid
+    description: Sum of paid amounts.
+    type: simple
+    type_params:
+      measure: paid_amount
+  - name: pmpm_paid_cost
+    label: PMPM paid cost
+    description: Paid amount per member per month.
+    type: ratio
+    type_params:
+      numerator: total_paid
+      denominator: member_months_total
+  - name: member_months_total
+    label: Member months
+    description: Member months. Only meaningful per month; do not add across other breakdowns.
+    type: simple
+    type_params:
+      measure: member_months
+  - name: denial_rate_metric
+    label: Denial rate
+    description: Denied claims divided by claims.
+    type: ratio
+    type_params:
+      numerator: denied_claims_total
+      denominator: claims_total
+  - name: denied_claims_total
+    label: Denied claims
+    type: simple
+    type_params:
+      measure: denied_claim_count
+  - name: claims_total
+    label: Claims
+    type: simple
+    type_params:
+      measure: claim_count
+  - name: avg_allowed_per_line_metric
+    label: Average allowed per line
+    description: Allowed amount divided by claim lines.
+    type: ratio
+    type_params:
+      numerator: allowed_total
+      denominator: lines_total
+  - name: allowed_total
+    label: Allowed amount
+    type: simple
+    type_params:
+      measure: allowed_amount
+  - name: lines_total
+    label: Claim lines
+    type: simple
+    type_params:
+      measure: line_count
+  - name: readmission_proxy_total
+    label: Readmission proxy claims
+    description: Paid institutional claims within the proxy window of the member's previous one (a proxy, not clinical readmission).
+    type: simple
+    type_params:
+      measure: readmission_proxy_count

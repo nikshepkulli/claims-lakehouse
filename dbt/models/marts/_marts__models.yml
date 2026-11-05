@@ -1,0 +1,460 @@
+version: 2
+
+# Marts: tables with enforced contracts (names + data types). Grain is stated per model.
+models:
+  - name: mart_claims_monthly
+    description: >-
+      Grain, one row per service month (all claim types). Headline utilisation and cost metrics - PMPM paid cost, denial rate, average allowed per line, readmission proxy count. member_months is a monthly denominator and must not be summed across breakdowns.
+    columns:
+      - name: month_key
+        data_type: integer
+        description: Service month as YYYYMM. Primary key.
+        constraints:
+          - type: not_null
+        data_tests:
+          - unique
+      - name: service_month
+        data_type: date
+        description: First day of the service month.
+        constraints:
+          - type: not_null
+        data_tests:
+          - unique
+      - name: claim_count
+        data_type: bigint
+        description: Claims with a service date in the month.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: denied_claim_count
+        data_type: bigint
+        description: Claims with status DENIED.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: active_member_count
+        data_type: bigint
+        description: Distinct members with at least one claim in the month.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: member_months
+        data_type: bigint
+        description: Members enrolled by month end (PMPM denominator).
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: line_count
+        data_type: bigint
+        description: Claim lines with a service date in the month.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: billed_amount
+        data_type: numeric(18,2)
+        description: Sum of claim billed totals.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: allowed_amount
+        data_type: numeric(18,2)
+        description: Sum of claim allowed totals.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: paid_amount
+        data_type: numeric(18,2)
+        description: Sum of claim paid totals.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: professional_paid_amount
+        data_type: numeric(18,2)
+        description: Paid on PROFESSIONAL claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: institutional_paid_amount
+        data_type: numeric(18,2)
+        description: Paid on INSTITUTIONAL claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: pharmacy_paid_amount
+        data_type: numeric(18,2)
+        description: Paid on PHARMACY claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: readmission_proxy_count
+        data_type: bigint
+        description: Paid institutional claims within the proxy window of the member's previous one.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: pmpm_paid
+        data_type: numeric(18,2)
+        description: Per-member-per-month paid cost = paid_amount / member_months.
+      - name: denial_rate
+        data_type: numeric(9,4)
+        description: denied_claim_count / claim_count, 0 to 1.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: avg_allowed_per_line
+        data_type: numeric(18,2)
+        description: Allowed amount per claim line = sum of line allowed / line_count.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+  - name: mart_provider_performance
+    description: >-
+      Grain, one row per provider_id per service month. Provider attributes are the current SCD2 version. specialty_cost_index compares allowed per claim with the specialty average for the same month.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [provider_id, service_month]
+    columns:
+      - name: provider_id
+        data_type: varchar
+        description: Natural provider id.
+        constraints:
+          - type: not_null
+      - name: service_month
+        data_type: date
+        description: First day of the service month.
+        constraints:
+          - type: not_null
+      - name: specialty
+        data_type: varchar
+        description: Provider specialty (current version).
+      - name: state_code
+        data_type: varchar
+        description: Provider state (current version).
+      - name: network_status
+        data_type: varchar
+        description: IN_NETWORK or OUT_OF_NETWORK (current version).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [IN_NETWORK, OUT_OF_NETWORK]
+      - name: cost_tier
+        data_type: varchar
+        description: STANDARD, ELEVATED or HIGH_COST (current version).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [STANDARD, ELEVATED, HIGH_COST]
+      - name: claim_count
+        data_type: bigint
+        description: Claims in the month.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: denied_claim_count
+        data_type: bigint
+        description: Denied claims in the month.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: unique_members
+        data_type: bigint
+        description: Distinct members seen.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: line_count
+        data_type: bigint
+        description: Claim lines in the month.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: allowed_amount
+        data_type: numeric(18,2)
+        description: Sum of allowed totals.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: paid_amount
+        data_type: numeric(18,2)
+        description: Sum of paid totals.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: readmission_proxy_count
+        data_type: bigint
+        description: Readmission proxy claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: denial_rate
+        data_type: numeric(9,4)
+        description: denied_claim_count / claim_count.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: avg_allowed_per_line
+        data_type: numeric(18,2)
+        description: Allowed amount per claim line.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: avg_paid_per_claim
+        data_type: numeric(18,2)
+        description: Paid amount per claim.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: specialty_cost_index
+        data_type: numeric(9,4)
+        description: Provider allowed per claim / specialty allowed per claim, same month. 1.0 = average.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+  - name: mart_member_risk
+    description: >-
+      Grain, one row per member_id (current version) including members with no claims. risk_score is a synthetic cost-percentile heuristic, not a clinical or actuarial model.
+    columns:
+      - name: member_id
+        data_type: varchar
+        description: Natural member id. Primary key.
+        constraints:
+          - type: not_null
+        data_tests:
+          - unique
+      - name: birth_year
+        data_type: smallint
+        description: Year of birth.
+      - name: age_years
+        data_type: smallint
+        description: Age at the last service date in the data.
+      - name: sex
+        data_type: varchar
+        description: Sex code.
+      - name: state_code
+        data_type: varchar
+        description: Member state.
+      - name: plan_type
+        data_type: varchar
+        description: Current plan type.
+      - name: enrollment_date
+        data_type: date
+        description: Enrollment date.
+      - name: last_service_date
+        data_type: date
+        description: Latest service date, null when the member has no claims.
+      - name: claim_count
+        data_type: bigint
+        description: Claims for the member.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: denied_claim_count
+        data_type: bigint
+        description: Denied claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: institutional_claim_count
+        data_type: bigint
+        description: Paid institutional claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: readmission_proxy_count
+        data_type: bigint
+        description: Readmission proxy claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: distinct_provider_count
+        data_type: bigint
+        description: Distinct providers seen.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: allowed_amount
+        data_type: numeric(18,2)
+        description: Total allowed.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: paid_amount
+        data_type: numeric(18,2)
+        description: Total paid.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: risk_score
+        data_type: numeric(5,1)
+        description: 0-100 percent rank of total paid among all members.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: risk_tier
+        data_type: varchar
+        description: HIGH (score >= 90), MEDIUM (>= 60) or LOW.
+        constraints:
+          - type: not_null
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [HIGH, MEDIUM, LOW]
+
+  - name: mart_denials
+    description: >-
+      Grain, one row per service month x claim_type x provider specialty. Denial analysis for payer operations.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [service_month, claim_type, provider_specialty]
+    columns:
+      - name: service_month
+        data_type: date
+        description: First day of the service month.
+        constraints:
+          - type: not_null
+      - name: claim_type
+        data_type: varchar
+        description: Claim type.
+        constraints:
+          - type: not_null
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [PROFESSIONAL, INSTITUTIONAL, PHARMACY]
+      - name: provider_specialty
+        data_type: varchar
+        description: Provider specialty at service time.
+      - name: claim_count
+        data_type: bigint
+        description: Claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: denied_claim_count
+        data_type: bigint
+        description: Denied claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: denial_rate
+        data_type: numeric(9,4)
+        description: denied_claim_count / claim_count.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: billed_amount
+        data_type: numeric(18,2)
+        description: Billed total.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: denied_billed_amount
+        data_type: numeric(18,2)
+        description: Billed total on denied claims.
+        constraints:
+          - type: not_null
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0

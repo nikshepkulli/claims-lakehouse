@@ -1,0 +1,11 @@
+# dbt on DuckDB (local + CI), python >= 3.11 (CI uses 3.12; 3.14 has no pyarrow/dbt wheels).
+# Production adapter is dbt-snowflake, deliberately NOT installed here: it is heavy, needs an
+# account, and has only been parse-validated offline (docs/dbt.md). Install it separately:
+#   pip install dbt-snowflake   (use the version matching dbt-core below)
+-r requirements-claimsgen.txt
+dbt-core==1.12.6
+dbt-duckdb==1.11.1
+duckdb==2.0.0
+sqlfluff==3.3.0
+pytest==8.3.4
+PyYAML==6.0.2

@@ -1,0 +1,63 @@
+version: 2
+
+models:
+  - name: int_claims_enriched
+    description: >-
+      Grain: one row per claim. Claims joined to member and provider (the version
+      valid on the service date), line aggregates, and the readmission proxy flag.
+    columns:
+      - name: claim_id
+        description: Claim id.
+        data_tests: [unique, not_null]
+      - name: member_id
+        description: Natural member id.
+        data_tests: [not_null]
+      - name: provider_id
+        description: Natural provider id.
+        data_tests: [not_null]
+      - name: provider_specialty
+        description: Provider specialty at service time.
+      - name: primary_diagnosis_sk
+        description: Primary diagnosis key, null when quarantined.
+      - name: service_date
+        description: Service date.
+      - name: service_month
+        description: First day of the service month.
+        data_tests: [not_null]
+      - name: received_date
+        description: Received date.
+      - name: claim_type
+        description: Claim type.
+      - name: claim_status
+        description: PAID or DENIED.
+      - name: is_denied
+        description: True when denied.
+      - name: line_count
+        description: Header line count.
+      - name: billed_amount
+        description: Header billed total.
+      - name: allowed_amount
+        description: Header allowed total.
+      - name: paid_amount
+        description: Header paid total.
+      - name: line_rows
+        description: Number of line rows found for the claim.
+      - name: line_allowed_amount
+        description: Sum of line allowed amounts.
+      - name: line_paid_amount
+        description: Sum of line paid amounts.
+      - name: is_readmission_proxy
+        description: >-
+          True for a paid institutional claim within the configured window
+          (var readmission_window_days) of the member's previous paid institutional claim.
+        data_tests: [not_null]
+
+  - name: int_member_months
+    description: Grain, one row per calendar month. Enrolled-member count used as the PMPM denominator.
+    columns:
+      - name: service_month
+        description: First day of the month.
+        data_tests: [unique, not_null]
+      - name: member_months
+        description: Members enrolled on or before the last day of the month.
+        data_tests: [not_null]

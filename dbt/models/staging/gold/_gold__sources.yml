@@ -1,0 +1,261 @@
+version: 2
+
+# Sources are the GOLD CONTRACT: the tables in warehouse/snowflake/01_gold_ddl.sql.
+#  - Snowflake target: schema MARTS in the target database (loaded by warehouse/snowflake/3x_*.sql).
+#  - DuckDB target (local/CI): Parquet at $GOLD_PATH/<table>/*.parquet via dbt-duckdb
+#    `external_location`. In this PR that Parquet is a TEST FIXTURE from
+#    scripts/make_gold_fixture.py, standing in for the Spark gold of ticket #8.
+# tests/dbt/test_gold_contract.py keeps these column lists equal to the DDL.
+sources:
+  - name: gold
+    description: Gold star schema (facts and SCD2 dimensions). Synthetic data only.
+    schema: marts
+    config:
+      meta:
+        external_location: "{{ env_var('GOLD_PATH', 'data/gold') }}/{name}/*.parquet"
+      loaded_at_field: loaded_at
+      freshness:
+        warn_after: {count: 2, period: day}
+        error_after: {count: 7, period: day}
+    tables:
+      - name: dim_date
+        description: Calendar dimension, one row per day. date_key is YYYYMMDD.
+        config:
+          freshness: null
+        columns:
+          - name: date_key
+            description: Calendar day as an integer YYYYMMDD. Primary key.
+            data_tests: [unique, not_null]
+          - name: full_date
+            description: The calendar date.
+            data_tests: [not_null]
+          - name: year
+            description: Calendar year.
+          - name: quarter
+            description: Calendar quarter, 1 to 4.
+          - name: month
+            description: Calendar month, 1 to 12.
+          - name: month_name
+            description: English month name.
+          - name: day_of_month
+            description: Day of month, 1 to 31.
+          - name: day_of_week
+            description: ISO day of week, 1 (Monday) to 7 (Sunday).
+          - name: is_weekend
+            description: True for Saturday and Sunday.
+
+      - name: dim_member
+        description: >-
+          Member dimension, SCD type 2. One row per member version; member_sk is
+          assigned in the gold layer.
+        columns:
+          - name: member_sk
+            description: Surrogate key of this member version. Primary key.
+            data_tests: [unique, not_null]
+          - name: member_id
+            description: Natural (fabricated) member id. Repeats across versions.
+            data_tests: [not_null]
+          - name: birth_year
+            description: Year of birth.
+          - name: sex
+            description: Sex code (M or F).
+          - name: state
+            description: Two-letter US state.
+          - name: plan_type
+            description: Insurance plan type.
+          - name: enrollment_date
+            description: Date the member enrolled.
+          - name: effective_from
+            description: Start of this version's validity (inclusive).
+            data_tests: [not_null]
+          - name: effective_to
+            description: End of this version's validity (exclusive). Null on the current version.
+          - name: is_current
+            description: True for the latest version of the member.
+            data_tests: [not_null]
+          - name: record_hash
+            description: Hash of the tracked attributes, used to detect change.
+          - name: load_batch_id
+            description: Id of the load that wrote this row.
+            data_tests: [not_null]
+          - name: loaded_at
+            description: When the row was loaded. Used for source freshness.
+            data_tests: [not_null]
+
+      - name: dim_provider
+        description: >-
+          Provider dimension, SCD type 2. One row per provider version; provider_sk
+          is assigned in the gold layer.
+        columns:
+          - name: provider_sk
+            description: Surrogate key of this provider version. Primary key.
+            data_tests: [unique, not_null]
+          - name: provider_id
+            description: Natural (fabricated) provider id. Repeats across versions.
+            data_tests: [not_null]
+          - name: specialty
+            description: Provider specialty.
+          - name: state
+            description: Two-letter US state.
+          - name: network_status
+            description: IN_NETWORK or OUT_OF_NETWORK.
+          - name: cost_tier
+            description: STANDARD, ELEVATED or HIGH_COST.
+          - name: effective_from
+            description: Start of this version's validity (inclusive).
+            data_tests: [not_null]
+          - name: effective_to
+            description: End of this version's validity (exclusive). Null on the current version.
+          - name: is_current
+            description: True for the latest version of the provider.
+            data_tests: [not_null]
+          - name: record_hash
+            description: Hash of the tracked attributes, used to detect change.
+          - name: load_batch_id
+            description: Id of the load that wrote this row.
+            data_tests: [not_null]
+          - name: loaded_at
+            description: When the row was loaded. Used for source freshness.
+            data_tests: [not_null]
+
+      - name: dim_diagnosis
+        description: ICD-10 code dimension (type 1). Only valid codes; invalid ones are quarantined upstream.
+        columns:
+          - name: diagnosis_sk
+            description: Surrogate key. Primary key.
+            data_tests: [unique, not_null]
+          - name: icd10_code
+            description: ICD-10 code.
+            data_tests: [unique, not_null]
+          - name: icd10_chapter
+            description: ICD-10 chapter indicator (first letter of the code in the fixture).
+          - name: description
+            description: Fabricated code description.
+          - name: load_batch_id
+            description: Id of the load that wrote this row.
+            data_tests: [not_null]
+          - name: loaded_at
+            description: When the row was loaded. Used for source freshness.
+            data_tests: [not_null]
+
+      - name: fact_claim
+        description: Claim header fact, grain one row per claim.
+        columns:
+          - name: claim_id
+            description: Claim id. Primary key.
+            data_tests: [unique, not_null]
+          - name: member_sk
+            description: Member version valid on the service date.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('gold', 'dim_member')
+                    field: member_sk
+          - name: provider_sk
+            description: Provider version valid on the service date.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('gold', 'dim_provider')
+                    field: provider_sk
+          - name: primary_diagnosis_sk
+            description: Primary diagnosis. Null when the code was invalid and quarantined.
+            data_tests:
+              - relationships:
+                  arguments:
+                    to: source('gold', 'dim_diagnosis')
+                    field: diagnosis_sk
+          - name: service_date_key
+            description: Service date as YYYYMMDD.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('gold', 'dim_date')
+                    field: date_key
+          - name: received_date_key
+            description: Received (ingest) date as YYYYMMDD.
+            data_tests: [not_null]
+          - name: claim_type
+            description: PROFESSIONAL, INSTITUTIONAL or PHARMACY.
+            data_tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: [PROFESSIONAL, INSTITUTIONAL, PHARMACY]
+          - name: place_of_service
+            description: Place-of-service code.
+          - name: claim_status
+            description: PAID or DENIED.
+            data_tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values: [PAID, DENIED]
+          - name: line_count
+            description: Number of lines on the claim.
+            data_tests: [not_null]
+          - name: total_billed_amount
+            description: Sum of billed amounts over the lines, DECIMAL(12,2).
+            data_tests: [not_null]
+          - name: total_allowed_amount
+            description: Sum of allowed amounts over the lines, DECIMAL(12,2).
+            data_tests: [not_null]
+          - name: total_paid_amount
+            description: Sum of paid amounts over the lines, DECIMAL(12,2). Zero when denied.
+            data_tests: [not_null]
+          - name: load_batch_id
+            description: Id of the load that wrote this row.
+            data_tests: [not_null]
+          - name: loaded_at
+            description: When the row was loaded. Used for source freshness.
+            data_tests: [not_null]
+
+      - name: fact_claim_line
+        description: Claim line fact, grain one row per claim line.
+        columns:
+          - name: line_id
+            description: Line id (claim_id-NN). Primary key.
+            data_tests: [unique, not_null]
+          - name: claim_id
+            description: Parent claim.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('gold', 'fact_claim')
+                    field: claim_id
+          - name: line_number
+            description: Line number within the claim, from 1.
+            data_tests: [not_null]
+          - name: procedure_code
+            description: CPT/HCPCS-shaped procedure code.
+            data_tests: [not_null]
+          - name: units
+            description: Units of service.
+            data_tests: [not_null]
+          - name: service_date_key
+            description: Service date as YYYYMMDD.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('gold', 'dim_date')
+                    field: date_key
+          - name: billed_amount
+            description: Billed amount, DECIMAL(12,2).
+            data_tests: [not_null]
+          - name: allowed_amount
+            description: Allowed amount, DECIMAL(12,2).
+            data_tests: [not_null]
+          - name: paid_amount
+            description: Paid amount, DECIMAL(12,2).
+            data_tests: [not_null]
+          - name: load_batch_id
+            description: Id of the load that wrote this row.
+            data_tests: [not_null]
+          - name: loaded_at
+            description: When the row was loaded. Used for source freshness.
+            data_tests: [not_null]
