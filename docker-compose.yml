@@ -1,0 +1,243 @@
+# Local claims-lakehouse stack. Sized for an 8 GB laptop:
+#   core services ~3.3 GB of limits, `lineage` profile adds ~1 GB.
+# Credentials come from .env (copy .env.example); defaults below are local-dev only.
+name: claims-lakehouse
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  minio:
+    # MinIO no longer publishes to Docker Hub/Quay; Chainguard's build, pinned by digest (-dev variant has a shell + wget).
+    image: cgr.dev/chainguard/minio@sha256:56fd0ffb3e0f7f0bf4ba08fadda17ca8c7769bffdf9af120a0a50e9145185465
+    <<: *restart
+    entrypoint: ["/usr/bin/minio"]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin-local}
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${BIND_ADDR:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/minio/health/ready >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits: {memory: 512m, cpus: "1.0"}
+
+  minio-init:
+    image: cgr.dev/chainguard/minio-client@sha256:d4367bd78c859a7629c48978cbdaa0f23a27d92ad3d59457738bc0c7f7128de2
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin-local}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        for b in bronze silver gold; do mc mb --ignore-existing local/$$b; done
+        mc ls local
+    restart: "no"
+    deploy:
+      resources:
+        limits: {memory: 128m}
+
+  redpanda:
+    image: redpandadata/redpanda@sha256:58c74e769945f17d175ffbfb8352e4ce606a4522d96af074844a0da66c349f32  # redpandadata/redpanda:v24.3.11
+    <<: *restart
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:${REDPANDA_KAFKA_PORT:-19092}
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${REDPANDA_KAFKA_PORT:-19092}:19092"
+      - "${BIND_ADDR:-127.0.0.1}:${REDPANDA_ADMIN_PORT:-9644}:9644"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits: {memory: 768m, cpus: "1.0"}
+
+  redpanda-console:
+    image: redpandadata/console@sha256:da36b5c659d0dfb61e838787bd7722d9389da900b2f5c274ccb40aec69be7fdc  # redpandadata/console:v2.8.5
+    <<: *restart
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${REDPANDA_CONSOLE_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/admin/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    deploy:
+      resources:
+        limits: {memory: 256m}
+
+  spark-master:
+    image: apache/spark@sha256:96dc2bada923824300e1ece564389258934655ba6f463d6daff8753ff0c639ce  # apache/spark:3.5.5-scala2.12-java17-python3-ubuntu
+    <<: *restart
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master", "--webui-port", "8080"]
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${SPARK_MASTER_UI_PORT:-8081}:8080"
+      - "${BIND_ADDR:-127.0.0.1}:${SPARK_MASTER_PORT:-7077}:7077"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET / HTTP/1.0\\r\\n\\r\\n\" >&3 && head -n1 <&3 | grep -q 200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits: {memory: 768m, cpus: "1.0"}
+
+  spark-worker:
+    image: apache/spark@sha256:96dc2bada923824300e1ece564389258934655ba6f463d6daff8753ff0c639ce  # apache/spark:3.5.5-scala2.12-java17-python3-ubuntu
+    <<: *restart
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "--webui-port", "8081", "spark://spark-master:7077"]
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-1g}
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-2}
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${SPARK_WORKER_UI_PORT:-8082}:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8081 && printf \"GET / HTTP/1.0\\r\\n\\r\\n\" >&3 && head -n1 <&3 | grep -q 200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits: {memory: 1536m, cpus: "2.0"}
+
+  postgres:
+    image: postgres@sha256:3b057e1c2c6dfee60a30950096f3fab33be141dbb0fdd7af3d477083de94166c  # postgres:16.8-alpine
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lakehouse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lakehouse-local}
+      POSTGRES_DB: ${POSTGRES_DB:-lakehouse}
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits: {memory: 256m, cpus: "0.5"}
+
+  # ---- lineage profile: `docker compose --profile lineage up -d` ----
+  marquez-db:
+    image: postgres@sha256:3b057e1c2c6dfee60a30950096f3fab33be141dbb0fdd7af3d477083de94166c  # postgres:16.8-alpine
+    profiles: [lineage]
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${MARQUEZ_DB_USER:-marquez}
+      POSTGRES_PASSWORD: ${MARQUEZ_DB_PASSWORD:-marquez-local}
+      POSTGRES_DB: marquez
+    volumes:
+      - marquez-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d marquez"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits: {memory: 192m, cpus: "0.5"}
+
+  marquez:
+    image: marquezproject/marquez@sha256:6d8a2c2cdb28a4f6d13f9ca6f8cc055d8312c4dee204ebeb848efdd76e6ab30e  # marquezproject/marquez:0.50.0
+    profiles: [lineage]
+    <<: *restart
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+    environment:
+      MARQUEZ_CONFIG: /etc/marquez/marquez.yml
+      MARQUEZ_PORT: 5000
+      MARQUEZ_ADMIN_PORT: 5001
+      POSTGRES_HOST: marquez-db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: marquez
+      POSTGRES_USER: ${MARQUEZ_DB_USER:-marquez}
+      POSTGRES_PASSWORD: ${MARQUEZ_DB_PASSWORD:-marquez-local}
+      JAVA_TOOL_OPTIONS: "-Xmx384m"
+    volumes:
+      - ./infra/marquez/marquez.yml:/etc/marquez/marquez.yml:ro
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${MARQUEZ_API_PORT:-5002}:5000"
+      - "${BIND_ADDR:-127.0.0.1}:${MARQUEZ_ADMIN_PORT:-5003}:5001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5001/healthcheck >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+    deploy:
+      resources:
+        limits: {memory: 640m, cpus: "1.0"}
+
+  marquez-web:
+    image: marquezproject/marquez-web@sha256:e8d53e10ab141cde1b121b01ff47776a58b407813fb6e10f490842d20c184346  # marquezproject/marquez-web:0.50.0
+    profiles: [lineage]
+    <<: *restart
+    depends_on:
+      marquez:
+        condition: service_healthy
+    environment:
+      MARQUEZ_HOST: marquez
+      WEB_PORT: 3000
+      MARQUEZ_CONFIG: /etc/marquez/marquez.yml
+      MARQUEZ_PORT: 5000
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${MARQUEZ_WEB_PORT:-3002}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    deploy:
+      resources:
+        limits: {memory: 192m}
+
+volumes:
+  minio-data:
+  redpanda-data:
+  postgres-data:
+  marquez-data:
