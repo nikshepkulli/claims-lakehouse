@@ -135,7 +135,7 @@ Apple-silicon laptop, Python 3.13, pyarrow 26, numpy 2.5, single process.
 | 1,000,000 | 5.4M (+2M events) | parquet+csv | 7.8 s | 1.07 GB | 992 MB |
 | 5,000,000 | 27M (+10M events) | parquet only | 31 s | 1.23 GB | 2.9 GB (7.9k files) |
 
-Memory is flat in volume (about 1.2 GB at 5M); extrapolating linearly, 50M claims is roughly 5-6 minutes and ~30 GB (parquet only, ~80k small files, which is deliberately realistic for a landing zone). The first run of a fresh interpreter is a little slower than shown.
+Memory is flat in volume (about 1.2 GB at 5M); extrapolating linearly, 50M claims is roughly 5-6 minutes and ~30 GB (parquet only, ~80k small files, which is deliberately realistic for a landing zone).
 
 ## Tests
 
