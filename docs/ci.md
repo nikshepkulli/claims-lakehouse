@@ -48,3 +48,5 @@ Branch protection is a repo setting, not code. Require: `python lint + format`, 
 ## Deployment (CD)
 
 `terraform-plan.yml` (PR plan comments) and `terraform-apply.yml` (manual, approval-gated) use OIDC and are documented in [cd.md](cd.md). Plan jobs are skipped (green) until the OIDC variables are set. They are not part of the required status checks.
+
+`dbt.yml` (path-filtered, separate from `ci.yml`) builds and tests the dbt project on DuckDB against a gold-shaped test fixture and uploads the dbt docs site as an artifact; see [dbt.md](dbt.md).

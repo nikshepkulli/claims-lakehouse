@@ -1,0 +1,14 @@
+# dbt models: Jinja templater (no dbt install needed) with the project's macros loaded and
+# dbt builtins (ref, source, config, var) stubbed by sqlfluff. Dialect is DuckDB, the engine
+# CI runs; the SQL is kept to the common subset that Snowflake also accepts.
+# Inherits max_line_length, exclude_rules and capitalisation from the repo-root .sqlfluff.
+[sqlfluff]
+dialect = duckdb
+templater = jinja
+
+[sqlfluff:templater:jinja]
+load_macros_from_path = macros
+apply_dbt_builtins = True
+
+[sqlfluff:templater:jinja:context]
+readmission_window_days = 30

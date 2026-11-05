@@ -1,0 +1,26 @@
+# Copy to profiles.yml (git-ignored) or point DBT_PROFILES_DIR at a directory holding it.
+#   cp dbt/profiles.yml.example dbt/profiles.yml
+#   dbt build --project-dir dbt --profiles-dir dbt --target duckdb
+#
+# duckdb    local + CI. Reads gold Parquet from $GOLD_PATH (default data/gold), see docs/dbt.md.
+# snowflake production adapter (dbt-snowflake, NOT in requirements-dbt.txt). Credentials come
+#           from environment variables only; nothing secret is ever written to this file.
+#           This target has been validated offline (dbt parse) only; it has not run on Snowflake.
+claims_lakehouse:
+  target: duckdb
+  outputs:
+    duckdb:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', 'data/claims.duckdb') }}"
+      threads: 4
+
+    snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'CLAIMS_DEV_TRANSFORMER') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'CLAIMS_DEV') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'CLAIMS_DEV_TRANSFORMER_WH') }}"
+      schema: marts
+      threads: 4

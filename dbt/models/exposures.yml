@@ -1,0 +1,19 @@
+version: 2
+
+# Planned consumers. The dashboard is ticket #29 and does not exist yet, so maturity is
+# low and there is no url; the exposure records lineage from the marts to it.
+exposures:
+  - name: claims_ops_dashboard
+    label: Claims operations dashboard (planned, #29)
+    type: dashboard
+    maturity: low
+    description: >-
+      Planned BI dashboard (ticket #29): monthly PMPM and denial trends, provider
+      performance, high-risk members, denial drill-down. Not built yet.
+    owner:
+      name: Nikshep Kulli
+    depends_on:
+      - ref('mart_claims_monthly')
+      - ref('mart_provider_performance')
+      - ref('mart_member_risk')
+      - ref('mart_denials')
