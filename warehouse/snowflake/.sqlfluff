@@ -1,0 +1,15 @@
+# Snowflake scripts. Overrides only the dialect; everything else is inherited
+# from the repo-root .sqlfluff (the root dialect is sparksql for Spark SQL).
+[sqlfluff]
+dialect = snowflake
+
+# Snowflake folds unquoted identifiers to upper case anyway; the repo style is
+# lower_snake_case identifiers with UPPER keywords, types and functions.
+[sqlfluff:rules:capitalisation.identifiers]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.functions]
+extended_capitalisation_policy = upper
+
+[sqlfluff:rules:capitalisation.types]
+extended_capitalisation_policy = upper
