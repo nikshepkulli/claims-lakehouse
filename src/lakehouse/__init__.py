@@ -1,1 +1,1 @@
-"""claims-lakehouse pipeline code."""
+"""claims-lakehouse pipeline code (bronze, silver, gold, streaming)."""

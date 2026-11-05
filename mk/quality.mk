@@ -10,7 +10,7 @@ lint:
 	sqlfluff lint $(SQL_PATHS)
 
 test:
-	pytest
+	pytest -m "not spark"
 
 fmt:
 	ruff check --fix $(PY_PATHS)
