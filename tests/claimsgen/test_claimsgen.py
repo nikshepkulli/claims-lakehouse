@@ -17,8 +17,10 @@ import pyarrow.parquet as pq
 import pytest
 
 from claimsgen import GenConfig, generate
+from claimsgen.config import DefectRates
 from claimsgen.reference import ICD_RE, PROC_RE
 
+FORMATS = ("parquet", "csv")
 ROWS, CHUNK = 20_000, 7_000  # 3 chunks: exercises chunk boundaries
 
 
@@ -47,13 +49,15 @@ def invalid(arr: pa.ChunkedArray, regex) -> pa.Array:
 @pytest.fixture(scope="module")
 def run(tmp_path_factory):
     out = tmp_path_factory.mktemp("raw")
-    manifest = generate(GenConfig(rows=ROWS, out=out, seed=7, chunk_size=CHUNK))
+    manifest = generate(GenConfig(rows=ROWS, out=out, seed=7, chunk_size=CHUNK, formats=FORMATS))
     return out, manifest
 
 
 def test_determinism_same_seed_identical_bytes(run, tmp_path):
     out, _ = run
-    generate(GenConfig(rows=ROWS, out=tmp_path / "again", seed=7, chunk_size=CHUNK))
+    generate(
+        GenConfig(rows=ROWS, out=tmp_path / "again", seed=7, chunk_size=CHUNK, formats=FORMATS)
+    )
     assert tree_hash(out) == tree_hash(tmp_path / "again")
 
 
@@ -72,12 +76,29 @@ def test_manifest_counts_match_data(run):
     assert claims.num_rows - len(pc.unique(claims["claim_id"])) == d["duplicate_claim"]["count"]
     lag = pc.days_between(claims["service_date"], claims["received_date"])
     assert distinct(claims, pc.greater_equal(lag, 30), "claim_id") == d["late_arrival"]["count"]
-    assert distinct(claims, pa.array([v not in members for v in claims["member_id"].to_pylist()]),
-                    "claim_id") == d["orphan_member_id"]["count"]
-    assert distinct(lines, pc.is_null(lines["procedure_code"]), "line_id") == d["null_procedure_code"]["count"]
-    assert distinct(lines, invalid(lines["procedure_code"], PROC_RE), "line_id") == d["invalid_procedure_code"]["count"]
-    assert distinct(lines, pc.less(lines["billed_amount"], 0), "line_id") == d["negative_amount"]["count"]
-    dx = dx.append_column("k", pc.binary_join_element_wise(dx["claim_id"], pc.cast(dx["dx_seq"], pa.string()), "-"))
+    assert (
+        distinct(
+            claims,
+            pa.array([v not in members for v in claims["member_id"].to_pylist()]),
+            "claim_id",
+        )
+        == d["orphan_member_id"]["count"]
+    )
+    assert (
+        distinct(lines, pc.is_null(lines["procedure_code"]), "line_id")
+        == d["null_procedure_code"]["count"]
+    )
+    assert (
+        distinct(lines, invalid(lines["procedure_code"], PROC_RE), "line_id")
+        == d["invalid_procedure_code"]["count"]
+    )
+    assert (
+        distinct(lines, pc.less(lines["billed_amount"], 0), "line_id")
+        == d["negative_amount"]["count"]
+    )
+    dx = dx.append_column(
+        "k", pc.binary_join_element_wise(dx["claim_id"], pc.cast(dx["dx_seq"], pa.string()), "-")
+    )
     assert distinct(dx, pc.is_null(dx["icd10_code"]), "k") == d["null_icd10"]["count"]
     assert distinct(dx, invalid(dx["icd10_code"], ICD_RE), "k") == d["invalid_icd10"]["count"]
     assert all(v["count"] > 0 for v in d.values()), "every defect type should fire at 20k rows"
@@ -88,7 +109,7 @@ def test_manifest_written_and_row_counts(run):
     assert json.loads((out / "defects_manifest.json").read_text()) == m
     assert "100% synthetic" in m["synthetic_notice"]
     assert m["rows_written"]["claims"] == ROWS + m["defects"]["duplicate_claim"]["count"]
-    assert m["rows_written"]["events"] == 2 * ROWS
+    assert m["rows_written"]["events"] == 2 * ROWS + m["defects"]["duplicate_event"]["count"]
 
 
 def test_referential_integrity_of_non_injected_rows(run):
@@ -97,10 +118,17 @@ def test_referential_integrity_of_non_injected_rows(run):
     ids = set(claims["claim_id"].to_pylist())
     assert set(lines["claim_id"].to_pylist()) <= ids
     assert set(dx["claim_id"].to_pylist()) <= ids
-    assert set(claims["provider_id"].to_pylist()) <= set(read(out, "providers")["provider_id"].to_pylist())
+    assert set(claims["provider_id"].to_pylist()) <= set(
+        read(out, "providers")["provider_id"].to_pylist()
+    )
     members = set(read(out, "members")["member_id"].to_pylist())
-    orphans = {c for c, mid in zip(claims["claim_id"].to_pylist(), claims["member_id"].to_pylist())
-               if mid not in members}
+    orphans = {
+        c
+        for c, mid in zip(
+            claims["claim_id"].to_pylist(), claims["member_id"].to_pylist(), strict=False
+        )
+        if mid not in members
+    }
     assert len(orphans) == m["defects"]["orphan_member_id"]["count"]  # nothing else is orphaned
     # every claim has >=1 line and >=1 diagnosis; header totals reconcile to (deduped) lines
     first = np.unique(np.array(lines["line_id"].to_pylist()), return_index=True)[1]
@@ -108,14 +136,20 @@ def test_referential_integrity_of_non_injected_rows(run):
     agg = uniq.group_by("claim_id").aggregate([("billed_amount", "sum")]).to_pylist()
     assert len(agg) == ROWS
     got = {r["claim_id"]: r["billed_amount_sum"] for r in agg}
-    for cid, tot in zip(claims["claim_id"].to_pylist()[:2000], claims["total_billed_amount"].to_pylist()[:2000]):
+    for cid, tot in zip(
+        claims["claim_id"].to_pylist()[:2000],
+        claims["total_billed_amount"].to_pylist()[:2000],
+        strict=False,
+    ):
         assert abs(got[cid] - tot) < 0.02
 
 
 def test_duplicates_are_exact_resends(run):
     out, _ = run
     claims = read(out, "claims")
-    dup_ids = [x["values"] for x in claims["claim_id"].value_counts().to_pylist() if x["counts"] > 1]
+    dup_ids = [
+        x["values"] for x in claims["claim_id"].value_counts().to_pylist() if x["counts"] > 1
+    ]
     assert dup_ids
     rows = claims.filter(pc.is_in(claims["claim_id"], pa.array(dup_ids[:50]))).to_pylist()
     by = {}
@@ -127,25 +161,31 @@ def test_duplicates_are_exact_resends(run):
 def test_schema_drift_in_exactly_one_day(run):
     out, m = run
     drift = m["schema_drift"]
-    with_col = [f.parent.name for f in (out / "claims").rglob("*.parquet")
-                if drift["added_column"] in pq.read_schema(f).names]
+    with_col = [
+        f.parent.name
+        for f in (out / "claims").rglob("*.parquet")
+        if drift["added_column"] in pq.read_schema(f).names
+    ]
     assert set(with_col) == {f"ingest_date={drift['ingest_date']}"}
-    assert any(drift["added_column"] in (f.read_text().splitlines()[0])
-               for f in (out / "claims" / f"ingest_date={drift['ingest_date']}").glob("*.csv"))
+    assert any(
+        drift["added_column"] in (f.read_text().splitlines()[0])
+        for f in (out / "claims" / f"ingest_date={drift['ingest_date']}").glob("*.csv")
+    )
 
 
 def test_partition_matches_received_date_and_late_rows_land_late(run):
     out, _ = run
     for f in sorted((out / "claims").rglob("*.parquet"))[:60]:
         t = pq.read_table(f)
-        assert {d.isoformat() for d in pc.unique(t["received_date"]).to_pylist()} == \
-               {f.parent.name.split("=")[1]}
+        assert {d.isoformat() for d in pc.unique(t["received_date"]).to_pylist()} == {
+            f.parent.name.split("=")[1]
+        }
 
 
 def test_realistic_skew(run):
     out, _ = run
     claims, prov = read(out, "claims"), read(out, "providers")
-    tier = dict(zip(prov["provider_id"].to_pylist(), prov["cost_tier"].to_pylist()))
+    tier = dict(zip(prov["provider_id"].to_pylist(), prov["cost_tier"].to_pylist(), strict=False))
     billed = np.array(claims["total_billed_amount"].to_numpy())
     hi = np.array([tier[p] == "HIGH_COST" for p in claims["provider_id"].to_pylist()])
     assert 0 < hi.mean() < 0.15  # a few providers...
@@ -156,24 +196,34 @@ def test_realistic_skew(run):
 
 def test_events_and_notes_are_synthetic_and_parseable(run):
     out, m = run
-    evs = [json.loads(line) for line in (out / "events" / "claim_events.jsonl").read_text().splitlines()]
-    assert len(evs) == 2 * ROWS
+    evs = [
+        json.loads(line)
+        for line in (out / "events" / "claim_events.jsonl").read_text().splitlines()
+    ]
+    assert len(evs) == 2 * ROWS + m["defects"]["duplicate_event"]["count"]
     assert {e["event_type"] for e in evs} == {"claim_submitted", "claim_paid", "claim_denied"}
-    notes = [json.loads(line) for f in (out / "notes").rglob("*.jsonl") for line in f.read_text().splitlines()]
+    notes = [
+        json.loads(line)
+        for f in (out / "notes").rglob("*.jsonl")
+        for line in f.read_text().splitlines()
+    ]
     assert len(notes) == m["rows_written"]["notes"] > 0
     assert all("SYNTHETIC" in n["text"] for n in notes)
 
 
 def test_csv_parquet_row_parity(run):
     out, _ = run
-    csv_rows = sum(len(f.read_text().splitlines()) - 1 for f in (out / "claim_lines").rglob("*.csv"))
+    csv_rows = sum(
+        len(f.read_text().splitlines()) - 1 for f in (out / "claim_lines").rglob("*.csv")
+    )
     assert csv_rows == read(out, "claim_lines").num_rows
 
 
 def _cli(*args, cwd=None):
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")}
-    return subprocess.run([sys.executable, "-m", "claimsgen", *args], capture_output=True, text=True,
-                          env=env, cwd=cwd)
+    return subprocess.run(
+        [sys.executable, "-m", "claimsgen", *args], capture_output=True, text=True, env=env, cwd=cwd
+    )
 
 
 def test_cli_smoke(tmp_path):
@@ -185,3 +235,108 @@ def test_cli_smoke(tmp_path):
     assert again.returncode == 2 and "--overwrite" in again.stderr
     assert _cli("--rows", "1000", "--out", str(out), "--quiet", "--overwrite").returncode == 0
     assert _cli("--rows", "10", "--out", str(tmp_path / "x")).returncode == 2
+
+
+def read_events(out: Path) -> list[dict]:
+    path = out / "events" / "claim_events.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def inversions(evs: list[dict]) -> list[int]:
+    """Indexes whose event_ts is earlier than the previous line's."""
+    return [i for i in range(1, len(evs)) if evs[i]["event_ts"] < evs[i - 1]["event_ts"]]
+
+
+def test_event_duplicates_are_identical_resends(run):
+    out, m = run
+    raw = (out / "events" / "claim_events.jsonl").read_text().splitlines()
+    ids = [json.loads(x)["event_id"] for x in raw]
+    d = m["defects"]["duplicate_event"]
+    assert len(ids) - len(set(ids)) == d["count"] > 0
+    assert len(d["sample_ids"]) == 5
+    by: dict[str, list[str]] = {}
+    for eid, line in zip(ids, raw, strict=True):
+        by.setdefault(eid, []).append(line)
+    assert all(len(set(v)) == 1 for v in by.values())  # copies are byte-identical
+    assert {e for e, v in by.items() if len(v) > 1} >= set(d["sample_ids"])
+
+
+def test_out_of_order_events_are_injected_and_counted(run, tmp_path):
+    out, m = run
+    o = m["defects"]["out_of_order_event"]
+    assert o["count"] > 0 and len(o["sample_ids"]) == 5
+    evs = read_events(out)
+    pos = {e["event_id"]: i for i, e in reversed(list(enumerate(evs)))}
+    for eid in o["sample_ids"]:  # sampled events are stamped before their predecessor
+        i = pos[eid]
+        assert evs[i]["event_ts"] < evs[i - 1]["event_ts"]
+    # isolate: with both event defects off, the stream is time-ordered within each chunk
+    clean = DefectRates(duplicate_event=0.0, out_of_order_event=0.0)
+    generate(GenConfig(rows=ROWS, out=tmp_path / "c", seed=7, chunk_size=CHUNK, rates=clean))
+    base = inversions(read_events(tmp_path / "c"))
+    assert len(base) <= 3  # only chunk boundaries (3 chunks) can invert
+    only = DefectRates(duplicate_event=0.0)
+    m2 = generate(GenConfig(rows=ROWS, out=tmp_path / "o", seed=7, chunk_size=CHUNK, rates=only))
+    n = m2["defects"]["out_of_order_event"]["count"]
+    assert n > 0
+    got = len(inversions(read_events(tmp_path / "o")))
+    assert 0.9 * n <= got <= n + 3 + n // 10
+
+
+def test_event_defect_rates_zero_gives_clean_stream(tmp_path):
+    clean = DefectRates(duplicate_event=0.0, out_of_order_event=0.0)
+    m = generate(GenConfig(rows=2000, out=tmp_path / "c", seed=3, chunk_size=2000, rates=clean))
+    assert (
+        m["defects"]["duplicate_event"]["count"] == m["defects"]["out_of_order_event"]["count"] == 0
+    )
+    assert m["rows_written"]["events"] == 4000
+    assert inversions(read_events(tmp_path / "c")) == []
+
+
+def test_default_formats_are_parquet_only(tmp_path):
+    assert GenConfig(rows=1000, out=tmp_path).formats == ("parquet",)
+    generate(GenConfig(rows=1000, out=tmp_path / "p", seed=1))
+    assert not list((tmp_path / "p").rglob("*.csv"))
+    assert list((tmp_path / "p").rglob("*.parquet"))
+
+
+def test_staging_removed_and_one_file_per_table_day_by_default(run):
+    out, m = run
+    assert not (out / "_staging").exists()
+    for t in ("claims", "claim_lines", "diagnoses"):
+        days = list((out / t).glob("ingest_date=*"))
+        assert len(list((out / t).rglob("*.parquet"))) == len(days)  # not one per chunk per day
+        assert m["files_written"][t] == 2 * len(days)  # parquet + csv
+
+
+def test_compaction_splits_to_target_size_and_keeps_rows(run, tmp_path):
+    out, m = run
+    target_mb = 0.004
+    small = tmp_path / "small"
+    m2 = generate(
+        GenConfig(
+            rows=ROWS,
+            out=small,
+            seed=7,
+            chunk_size=CHUNK,
+            formats=FORMATS,
+            target_file_mb=target_mb,
+        )
+    )
+    assert m2["files_written"]["claim_lines"] > m["files_written"]["claim_lines"]
+    for f in (small / "claim_lines").rglob("*.parquet"):
+        assert pq.read_table(f).nbytes <= target_mb * 1024 * 1024 * 1.05
+    for t in ("claims", "claim_lines", "diagnoses"):  # same rows, same order, any file layout
+        assert read(small, t).equals(read(out, t))
+        csv_rows = sum(len(f.read_text().splitlines()) - 1 for f in (small / t).rglob("*.csv"))
+        assert csv_rows == read(small, t).num_rows
+    notes = lambda root: sorted(  # noqa: E731
+        ln for f in (root / "notes").rglob("*.jsonl") for ln in f.read_text().splitlines()
+    )
+    assert notes(small) == notes(out)
+    assert (small / "claims").exists() and not (small / "_staging").exists()
+
+
+def test_bad_target_file_mb_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        GenConfig(rows=1000, out=tmp_path, target_file_mb=0)

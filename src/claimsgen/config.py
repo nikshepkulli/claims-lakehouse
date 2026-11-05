@@ -29,6 +29,8 @@ class DefectRates:
     negative_amount: float = 0.003  # per claim line
     null_icd10: float = 0.004  # per diagnosis row
     invalid_icd10: float = 0.004  # per diagnosis row
+    duplicate_event: float = 0.005  # per stream event: same event_id re-sent later in the stream
+    out_of_order_event: float = 0.01  # per stream event: event_ts shifted earlier than neighbours
 
 
 @dataclass(frozen=True)
@@ -39,9 +41,10 @@ class GenConfig:
     chunk_size: int = 250_000  # claims per chunk; bounds memory
     start_date: date = date(2024, 1, 1)
     days: int = 366
-    formats: tuple[str, ...] = ("parquet", "csv")
+    formats: tuple[str, ...] = ("parquet",)
     notes_rate: float = 0.25  # share of claims that get a clinical note
     overwrite: bool = False
+    target_file_mb: float = 128.0  # target in-memory (uncompressed) size of each output file
     rates: DefectRates = field(default_factory=DefectRates)
 
     def __post_init__(self) -> None:
@@ -49,6 +52,8 @@ class GenConfig:
             raise ValueError("rows must be >= 1000")
         if self.chunk_size < 1:
             raise ValueError("chunk_size must be >= 1")
+        if self.target_file_mb <= 0:
+            raise ValueError("target_file_mb must be > 0")
         if not set(self.formats) <= {"parquet", "csv"} or not self.formats:
             raise ValueError("formats must be a non-empty subset of {parquet, csv}")
 
