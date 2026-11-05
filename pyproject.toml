@@ -17,3 +17,4 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = ["spark: needs PySpark + Java (run via `make test-spark` or the spark-tests CI job)"]
