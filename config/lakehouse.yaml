@@ -1,0 +1,37 @@
+# Single source of truth for where the lakehouse lives. Pipeline code never builds
+# provider paths; it asks lakehouse_common.storage to resolve (layer, table, partition).
+# Select an overlay with LAKEHOUSE_ENV=local|aws|azure (config/lakehouse.<env>.yaml is
+# deep-merged over this file). No secrets belong in any of these files: credentials come
+# from the environment or a managed identity at runtime.
+project: claims-lakehouse
+environment: base
+
+storage:
+  # local = file:// (unit tests, laptop, no services). aws = s3a:// (real S3, or MinIO when
+  # an endpoint is set). azure = abfss:// (ADLS Gen2).
+  cloud: local
+
+  local:
+    root: data/lake # relative paths resolve against the current working directory
+
+  aws:
+    # layer -> bucket. Real bucket names carry the account id (see infra/aws).
+    buckets:
+      bronze: null
+      silver: null
+      gold: null
+    prefix: ""
+    region: us-east-1
+    endpoint: null # set for S3-compatible stores such as MinIO
+    path_style_access: false
+    credentials: default_chain # default_chain | env_keys (env_keys reads env vars at runtime)
+
+  azure:
+    account: null # storage account name (3-24 lowercase alphanumerics)
+    # layer -> filesystem (container). Matches infra/azure defaults.
+    filesystems:
+      bronze: bronze
+      silver: silver
+      gold: gold
+    prefix: ""
+    auth: managed_identity # managed_identity | service_principal (secret read from env)

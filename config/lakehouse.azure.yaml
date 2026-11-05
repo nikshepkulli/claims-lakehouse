@@ -1,0 +1,12 @@
+# Azure: account name comes from `terraform output layer_uris` (infra/azure/envs/dev).
+# The placeholder below is a syntactically valid name, not a real account.
+environment: azure
+storage:
+  cloud: azure
+  azure:
+    account: stclaimslakehouse000000
+    filesystems:
+      bronze: bronze
+      silver: silver
+      gold: gold
+    auth: managed_identity

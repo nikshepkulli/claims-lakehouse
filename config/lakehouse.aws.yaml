@@ -1,0 +1,12 @@
+# AWS: bucket names come from `terraform output layer_uris` (infra/aws/envs/dev).
+# Names embed the account id, so replace the placeholders below (or override per deploy).
+environment: aws
+storage:
+  cloud: aws
+  aws:
+    buckets:
+      bronze: claims-lakehouse-dev-bronze-000000000000
+      silver: claims-lakehouse-dev-silver-000000000000
+      gold: claims-lakehouse-dev-gold-000000000000
+    region: us-east-1
+    credentials: default_chain
