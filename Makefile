@@ -4,7 +4,7 @@ COMPOSE ?= docker compose
 # Set LINEAGE=1 to include Marquez (compose profile `lineage`), e.g. `make demo LINEAGE=1`
 PROFILE_FLAGS := $(if $(LINEAGE),--profile lineage,)
 
-.PHONY: help env up down ps logs demo clean smoke
+.PHONY: help env up down ps logs demo clean smoke verify-pins
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -30,6 +30,9 @@ logs: ## Tail logs (SERVICE=name to filter)
 
 smoke: ## Probe every service endpoint
 	bash tests/stack/smoke.sh
+
+verify-pins: ## Fail if any compose image is not digest-pinned
+	bash scripts/verify-pins.sh
 
 demo: up smoke ## One command: up + wait healthy + verify + print URLs
 	@echo ""

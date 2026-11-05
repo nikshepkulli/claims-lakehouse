@@ -31,7 +31,7 @@ Never reuse them anywhere real.
 
 \* compose profile `lineage` (opt in with `LINEAGE=1` or `docker compose --profile lineage up -d`).
 
-Host ports are overridable in `.env`. Marquez defaults avoid 5000 (macOS AirPlay) and 3000 (common dev servers).
+Host ports are overridable in `.env`. All published ports bind to `127.0.0.1` only (see Security). Marquez defaults avoid 5000 (macOS AirPlay) and 3000 (common dev servers).
 
 ## Verify
 
@@ -42,6 +42,25 @@ registration (`ALIVE`), and Postgres readiness. Every long-running service also 
 
 Manual spot checks: MinIO console at http://localhost:9001 shows three buckets; Spark UI at
 http://localhost:8081 shows one ALIVE worker.
+
+## Security: loopback binding
+
+The stack ships default passwords (MinIO, Postgres, Marquez DB), so every published port is bound to
+`${BIND_ADDR:-127.0.0.1}` and is not reachable from the LAN. Redpanda's advertised external Kafka address is
+`localhost:19092`, which is correct for host clients. To expose the stack deliberately (for example to a
+second machine), set `BIND_ADDR=0.0.0.0` in `.env` and change every default password first; remote Kafka
+clients would also need the advertised address changed.
+
+## Image pins
+
+Every image is pinned by multi-arch index digest (`image: name@sha256:... # readable-tag`). `make verify-pins`
+fails if any `image:` lacks a digest. To refresh a pin:
+
+```bash
+docker buildx imagetools inspect <image:tag>   # copy the top-level "Digest:" (the index, not a platform manifest)
+# edit docker-compose.yml: image: <name>@sha256:<digest>  # <tag>
+make verify-pins && docker compose --profile lineage pull && make demo LINEAGE=1
+```
 
 ## Notes and gotchas
 
