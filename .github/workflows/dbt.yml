@@ -8,6 +8,9 @@ on:
       - "dbt/**"
       - "scripts/make_gold_fixture.py"
       - "tests/dbt/**"
+      - "analytics/**"
+      - "scripts/run_analytics_queries.py"
+      - "tests/scripts/test_run_analytics_queries.py"
       - "warehouse/snowflake/01_gold_ddl.sql"
       - "src/claimsgen/**"
       - "requirements-dbt.txt"
@@ -44,6 +47,10 @@ jobs:
       - name: sqlfluff (dbt models)
         working-directory: dbt
         run: sqlfluff lint .
+      - name: sqlfluff (analyst queries)
+        run: sqlfluff lint analytics/
+      - name: analytics query runner unit tests
+        run: pytest tests/scripts/test_run_analytics_queries.py
       - name: generate synthetic claims
         run: PYTHONPATH=src python -m claimsgen --rows 5000 --seed 42 --out data/raw
       - name: build gold TEST FIXTURE
@@ -53,6 +60,8 @@ jobs:
       - run: dbt parse --project-dir dbt --target duckdb
       - name: dbt build (models + tests)
         run: dbt build --project-dir dbt --target duckdb
+      - name: run analyst queries on the built marts (#17)
+        run: python scripts/run_analytics_queries.py
       - name: source freshness
         run: dbt source freshness --project-dir dbt --target duckdb
       - name: dbt docs generate

@@ -47,6 +47,8 @@ Metric definitions and caveats:
 
 ### Semantic layer
 
+Analyst-facing grain, caveats and ten tested example queries for these marts are in [analytics-guide.md](analytics-guide.md).
+
 `models/semantic/_semantic_layer.yml` defines a `claims_monthly` semantic model over `mart_claims_monthly` and metrics (`total_paid`, `pmpm_paid_cost`, `denial_rate_metric`, `avg_allowed_per_line_metric`, `readmission_proxy_total`, ...) using the YAML spec of the pinned dbt-core (1.12.6). `dbt parse` validates it. Nothing here queries it: that needs MetricFlow / a semantic layer service, which this repo does not run.
 
 ### Exposure
