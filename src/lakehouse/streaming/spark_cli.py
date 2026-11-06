@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import sys
 
 from .config import EVENTS_TOPIC
+from .gates import (
+    DEFAULT_GATES_PATH,
+    ON_FAIL_ACTIONS,
+    GateConfig,
+    GateConfigError,
+    GateFailure,
+    load_gate_config,
+)
 from .spark_rules import Roots, roots_from_location, roots_from_root
 
 
@@ -39,6 +48,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument(
         "--dlq-kafka", action="store_true", help="also publish dead letters to <topic>.dlq"
     )
+    gates = ap.add_argument_group("data-quality gates (per micro-batch)")
+    gates.add_argument(
+        "--gates-config",
+        default=str(DEFAULT_GATES_PATH),
+        help="gate thresholds YAML, validated before Spark starts (default: %(default)s)",
+    )
+    gates.add_argument("--no-gates", action="store_true", help="do not evaluate gates")
+    gates.add_argument(
+        "--on-fail",
+        choices=ON_FAIL_ACTIONS,
+        help="override the YAML on_fail: halt = stop the query, divert = batch to the DLQ",
+    )
     ap.add_argument("--master", default=None, help="Spark master (default: local[*])")
     return ap.parse_args(argv)
 
@@ -53,9 +74,26 @@ def resolve_roots(args: argparse.Namespace) -> Roots:
     return roots_from_location(resolve_location(load_config(args.env)))
 
 
+def resolve_gates(args: argparse.Namespace) -> GateConfig | None:
+    """Load + validate the gates before any Spark work, so a typo fails in milliseconds."""
+    if args.no_gates:
+        return None
+    try:
+        cfg = load_gate_config(args.gates_config)
+    except GateConfigError as e:
+        raise SystemExit(f"streaming-spark: {e}") from e
+    return dataclasses.replace(cfg, on_fail=args.on_fail) if args.on_fail else cfg
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "replay-dlq":
+        from .dlq_replay import main as replay_main
+
+        return replay_main(argv[1:])
     args = parse_args(argv)
     roots = resolve_roots(args)
+    gates = resolve_gates(args)
 
     from .spark_job import StreamConfig, build_stream_spark, run_job
 
@@ -75,12 +113,22 @@ def main(argv: list[str] | None = None) -> int:
         max_files_per_trigger=args.max_files_per_trigger,
         run_seconds=args.run_seconds,
         dlq_kafka=args.dlq_kafka,
+        gates=gates,
     )
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     spark = build_stream_spark(cfg, master=args.master)
     spark.sparkContext.setLogLevel("WARN")
     try:
         result = run_job(spark, cfg)
+    except GateFailure as e:
+        print(f"streaming-spark: HALTED by data-quality gate. {e}", file=sys.stderr)
+        print(
+            "The failing batch was NOT written. Fix the source or the thresholds in "
+            f"{args.gates_config} (or use --on-fail divert), then re-run with the same --root "
+            "to replay it.",
+            file=sys.stderr,
+        )
+        return 3
     finally:
         spark.stop()
     print(
