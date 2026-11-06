@@ -58,7 +58,9 @@ jobs:
           - suite: silver-rules
             path: tests/silver/test_silver_rules.py
           - suite: streaming
-            path: tests/streaming
+            path: tests/streaming/test_spark_job.py tests/streaming/test_spark_rules.py
+          - suite: streaming-gates
+            path: tests/streaming/test_spark_gates.py tests/streaming/test_dlq_replay.py
           - suite: gold
             path: tests/gold
     steps:

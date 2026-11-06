@@ -21,6 +21,9 @@ from .contract import validate_message
 REASON_MALFORMED = "malformed_json"
 REASON_CONTRACT = "contract_violation"
 REASON_NULL_PAYLOAD = "null_payload"
+# A valid event dead-lettered because its whole batch failed a data-quality gate (on_fail=divert).
+# Its payload is a canonical re-serialisation of the parsed event, so it re-validates on replay.
+REASON_GATE_DIVERTED = "gate_diverted"
 # Not a DLQ code: late events are diverted to their own table with this reason.
 REASON_LATE = "late_beyond_watermark"
 

@@ -22,11 +22,12 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
@@ -38,8 +39,22 @@ from lakehouse.bronze.paths import table_uri
 from lakehouse.bronze.spark import build_spark
 
 from .config import EVENTS_TOPIC, dlq_topic
+from .gates import (
+    FAILURE_MARKER,
+    ON_FAIL_DIVERT,
+    ON_FAIL_HALT,
+    BatchStats,
+    GateConfig,
+    GateFailure,
+    GateReport,
+    evaluate,
+)
 from .spark_rules import (
+    REASON_CONTRACT,
+    REASON_GATE_DIVERTED,
     REASON_LATE,
+    REASON_MALFORMED,
+    REASON_NULL_PAYLOAD,
     checkpoint_dir,
     envelope_json,
     parse_duration_seconds,
@@ -48,6 +63,7 @@ from .spark_rules import (
 
 log = logging.getLogger("lakehouse.streaming.spark")
 
+REPLAY_SOURCE_PREFIX = "dlq-replay:"  # bronze source_file of a replayed dead letter
 BRONZE_QUERY = "bronze_events"
 SILVER_QUERY = "silver_events"
 
@@ -62,6 +78,8 @@ class Tables:
     STATUS = "claim_status"
     WM_STATE = "stream_watermark_state"
     METRICS = "stream_metrics"
+    GATES = "stream_gate_results"
+    DQ_BATCHES = "stream_dq_batches"
 
 
 @dataclass
@@ -81,6 +99,7 @@ class StreamConfig:
     max_files_per_trigger: int | None = None  # files bronze / delta silver batch size
     run_seconds: float | None = None  # processingTime only: stop after N seconds
     dlq_kafka: bool = False  # also publish dead letters to <topic>.dlq (at-least-once)
+    gates: GateConfig | None = None  # per-batch data-quality gates; None = not evaluated
     fail_on_data_loss: bool = True
 
     def uri(self, table: str) -> str:
@@ -102,6 +121,8 @@ class StreamConfig:
         if self.source == "files" and "bronze" in self.stages and not self.input_dir:
             raise ValueError("--input-dir is required for the files source")
         parse_duration_seconds(self.watermark_delay)
+        if self.dlq_kafka and not self.bootstrap:
+            raise ValueError("--dlq-kafka needs --bootstrap (the DLQ topic lives on that broker)")
         bad = set(self.stages) - {"bronze", "silver"}
         if bad:
             raise ValueError(f"unknown stages {sorted(bad)}")
@@ -228,6 +249,42 @@ METRICS_SCHEMA = T.StructType(
 )
 
 
+GATE_RESULT_SCHEMA = T.StructType(
+    [
+        T.StructField("query_name", T.StringType(), False),
+        T.StructField("batch_id", T.LongType(), False),
+        T.StructField("gate", T.StringType(), False),
+        T.StructField("status", T.StringType()),  # pass | warn | fail | skipped
+        T.StructField("value", T.DoubleType()),
+        T.StructField("numerator", T.LongType()),
+        T.StructField("denominator", T.LongType()),
+        T.StructField("warn_threshold", T.DoubleType()),
+        T.StructField("fail_threshold", T.DoubleType()),
+        T.StructField("batch_status", T.StringType()),
+        T.StructField("action", T.StringType()),  # none | halt | divert
+        T.StructField("evaluated_at", T.TimestampType()),
+    ]
+)
+
+DQ_BATCH_SCHEMA = T.StructType(
+    [
+        T.StructField("query_name", T.StringType(), False),
+        T.StructField("batch_id", T.LongType(), False),
+        T.StructField("status", T.StringType()),
+        T.StructField("action", T.StringType()),
+        T.StructField("total_rows", T.LongType()),
+        T.StructField("valid_rows", T.LongType()),
+        T.StructField("contract_failures", T.LongType()),
+        T.StructField("dlq_rows", T.LongType()),
+        T.StructField("late_rows", T.LongType()),
+        T.StructField("duplicate_rows", T.LongType()),
+        T.StructField("diverted_rows", T.LongType()),  # valid events sent to the DLQ by a gate
+        T.StructField("breaches", T.StringType()),
+        T.StructField("evaluated_at", T.TimestampType()),
+    ]
+)
+
+
 def _create_table(spark: SparkSession, uri: str, schema: T.StructType) -> None:
     DeltaTable.createIfNotExists(spark).location(uri).addColumns(schema).execute()
 
@@ -241,6 +298,8 @@ def ensure_tables(spark: SparkSession, cfg: StreamConfig) -> None:
         (Tables.STATUS, STATUS_SCHEMA),
         (Tables.WM_STATE, WM_STATE_SCHEMA),
         (Tables.METRICS, METRICS_SCHEMA),
+        (Tables.GATES, GATE_RESULT_SCHEMA),
+        (Tables.DQ_BATCHES, DQ_BATCH_SCHEMA),
     ):
         _create_table(spark, cfg.uri(name), schema)
 
@@ -384,13 +443,21 @@ def silver_plan(spark: SparkSession, cfg: StreamConfig) -> DataFrame:
         *[F.col(f"_e.{f}").alias(f) for f in _EVENT_FIELDS if f != "event_ts"],
         F.to_timestamp(F.col("_e.event_ts"), "yyyy-MM-dd'T'HH:mm:ss'Z'").alias("event_ts"),
     ).select(*_OUT_COLS)
+    # A replayed dead letter (dlq_replay.py) re-enters bronze with source_file 'dlq-replay:<key>'.
+    # Those rows bypass the stateful dedupe like invalid rows do: their event_id can still be in
+    # the dedupe state (e.g. the event was gate-diverted a moment ago) and an event time far behind
+    # the watermark gets filtered by the stateful operator. Measured: replayed events 3 h behind
+    # the watermark vanished before foreachBatch. The MERGE on event_id still stops true
+    # duplicates and foreachBatch still classifies lateness, so nothing is lost silently.
+    is_replay = F.coalesce(F.col("source_file").startswith(REPLAY_SOURCE_PREFIX), F.lit(False))
     valid = (
-        typed.where("ok")
+        typed.where(F.col("ok") & ~is_replay)
         .withColumn("value", F.lit(None).cast("binary"))  # payload only needed for dead letters
         .withWatermark("event_ts", cfg.watermark_delay)
         .dropDuplicatesWithinWatermark(["event_id"])
     )
-    return valid.unionByName(typed.where(~F.col("ok")))
+    replayed = typed.where(F.col("ok") & is_replay).withColumn("value", F.lit(None).cast("binary"))
+    return valid.unionByName(replayed).unionByName(typed.where(~F.col("ok")))
 
 
 # ---------------------------------------------------------------- metrics
@@ -515,6 +582,35 @@ def flush_metrics(spark: SparkSession, cfg: StreamConfig, collector: MetricsColl
 FaultHook = Callable[[str, int], None]
 
 
+def publish_dead_letters(dead: DataFrame, cfg: StreamConfig) -> None:
+    """Publish DLQ rows to ``<topic>.dlq``: key = ``dlq_key`` (replay-safe), value = the DLQ
+    envelope JSON (original payload base64, reason, source topic/partition/offset), headers
+    ``dlq-reason`` / ``dlq-stage``. Idempotent producer, acks=all. At-least-once: a replayed
+    micro-batch publishes again, so consumers dedupe on the record key."""
+    (
+        dead.select(
+            F.col("dlq_key").alias("key"),
+            F.col("envelope_json").alias("value"),
+            F.array(
+                F.struct(
+                    F.lit("dlq-reason").alias("key"),
+                    F.col("reason_code").cast("binary").alias("value"),
+                ),
+                F.struct(
+                    F.lit("dlq-stage").alias("key"),
+                    F.lit("consumer").cast("binary").alias("value"),
+                ),
+            ).alias("headers"),
+        )
+        .write.format("kafka")
+        .option("kafka.bootstrap.servers", cfg.bootstrap)
+        .option("kafka.acks", "all")
+        .option("kafka.enable.idempotence", "true")
+        .option("topic", dlq_topic(cfg.topic))
+        .save()
+    )
+
+
 class SilverSink:
     """``foreachBatch`` body. Every step is keyed, so re-running a batch is a no-op.
 
@@ -561,11 +657,170 @@ class SilverSink:
         valid = batch.where("ok").dropDuplicates(["event_id"])  # MERGE needs unique sources
         invalid = batch.where(~F.col("ok"))
 
+        # Read-only prelude: the cutoff comes from PREVIOUS batches' state, and the gates need
+        # the late/duplicate counts, so everything is computed before any sink write. That is
+        # what lets a failed gate stop the batch with the sink untouched.
+        prev = self._prev_high_water(spark, batch_id)
+        cutoff = None if prev is None else prev - self.delay_s
+        is_late = F.lit(False) if cutoff is None else F.col("event_ts").cast("long") < F.lit(cutoff)
+        silver_uri = cfg.uri(Tables.SILVER)
+        # events accepted by EARLIER batches (batch_id < current keeps a replay of this batch
+        # from counting its own, already-merged rows as duplicates)
+        prior = (
+            spark.read.format("delta")
+            .load(silver_uri)
+            .where(F.col("batch_id") < batch_id)
+            .select("event_id", F.lit(True).alias("_prior"))
+            .dropDuplicates(["event_id"])
+        )
+        flagged = valid.join(prior, "event_id", "left").persist()
+        try:
+            agg = self._aggregate(batch, flagged, is_late)
+            # an empty batch has nothing to gate (and would add a meaningless 'pass' row)
+            report = self._gate(prev, agg, batch_id) if agg["total"] else None
+            divert = report is not None and report.action == ON_FAIL_DIVERT
+            if report is not None:
+                self._record_gates(spark, report, agg["distinct"] if divert else 0)
+                for level, line in report.log_records():
+                    log.log(getattr(logging, level.upper()), line)
+                if report.action == ON_FAIL_HALT:
+                    raise GateFailure(report.failure_message(), report)
+            if divert:
+                self._step("gate_divert", batch_id)
+                self._divert(spark, invalid, valid, report, batch_id)
+                self._step("dlq", batch_id)
+                self.collector.record_batch(
+                    SILVER_QUERY, batch_id, on_time_count=0, late_count=0, dlq_count=agg["dlq"]
+                )
+                return
+            self._write_batch(spark, batch_id, valid, invalid, flagged, is_late, cutoff, agg)
+        finally:
+            flagged.unpersist()
+
+    def _aggregate(self, batch: DataFrame, flagged: DataFrame, is_late) -> dict[str, int]:
+        """Two single-pass aggregations: batch counts, and distinct/prior/late over valid rows."""
+        parsed = ~F.coalesce(F.col("error_type"), F.lit("")).isin(
+            REASON_MALFORMED, REASON_NULL_PAYLOAD
+        )
+        null_fields = list(self.cfg.gates.null_rate) if self.cfg.gates else []
+        row = batch.agg(
+            F.count(F.lit(1)).alias("total"),
+            F.sum(F.when(F.col("ok"), 1).otherwise(0)).alias("valid"),
+            F.sum(F.when(parsed, 1).otherwise(0)).alias("parsed"),
+            F.sum(F.when(F.col("error_type") == REASON_CONTRACT, 1).otherwise(0)).alias("contract"),
+            F.sum(F.when(~F.col("ok"), 1).otherwise(0)).alias("dlq"),
+            *[
+                F.sum(F.when(parsed & F.col(f).isNull(), 1).otherwise(0)).alias(f"null_{f}")
+                for f in null_fields
+            ],
+        ).first()
+        v = flagged.agg(
+            F.count(F.lit(1)).alias("distinct"),
+            F.sum(F.when(F.col("_prior"), 1).otherwise(0)).alias("prior"),
+            F.sum(F.when(is_late & F.col("_prior").isNull(), 1).otherwise(0)).alias("late"),
+            F.max("event_ts").cast("long").alias("max_ts"),
+        ).first()
+        out = {k: int(row[k] or 0) for k in ("total", "valid", "parsed", "contract", "dlq")}
+        out.update({f"null_{f}": int(row[f"null_{f}"] or 0) for f in null_fields})
+        out.update({k: int(v[k] or 0) for k in ("distinct", "prior", "late")})
+        out["max_ts"] = v["max_ts"]  # may be None (no valid rows)
+        out["duplicates"] = (out["valid"] - out["distinct"]) + out["prior"]
+        return out
+
+    def _gate(self, prev_hw: int | None, agg: dict, batch_id: int) -> GateReport | None:
+        gates = self.cfg.gates
+        if gates is None:
+            return None
+        hw = [x for x in (prev_hw, agg["max_ts"]) if x is not None]
+        lag = (time.time() - (max(hw) - self.delay_s)) if hw else None
+        stats = BatchStats(
+            total_rows=agg["total"],
+            valid_rows=agg["valid"],
+            parsed_rows=agg["parsed"],
+            contract_failures=agg["contract"],
+            dlq_rows=agg["dlq"],
+            late_rows=agg["late"],
+            duplicate_rows=agg["duplicates"],
+            null_counts={f: agg[f"null_{f}"] for f in gates.null_rate},
+            watermark_lag_seconds=lag,
+        )
+        return evaluate(stats, gates, query=SILVER_QUERY, batch_id=batch_id)
+
+    def _record_gates(self, spark: SparkSession, report: GateReport, diverted: int) -> None:
+        """Upsert the per-gate rows and the one-row batch summary (replay-safe: keyed)."""
+        now = datetime.now(timezone.utc)  # noqa: UP017 - the Spark image runs Python 3.10
+        g_rows = [
+            (
+                report.query,
+                report.batch_id,
+                r.gate,
+                r.status,
+                r.value,
+                r.numerator,
+                r.denominator,
+                r.warn,
+                r.fail,
+                report.status,
+                report.action,
+                now,
+            )
+            for r in report.results
+        ]
+        s = report.stats
+        b_row = (
+            report.query,
+            report.batch_id,
+            report.status,
+            report.action,
+            s.total_rows,
+            s.valid_rows,
+            s.contract_failures,
+            s.dlq_rows,
+            s.late_rows,
+            s.duplicate_rows,
+            diverted,
+            report.breach_summary() or None,
+            now,
+        )
+        gdf = spark.createDataFrame(g_rows, schema=GATE_RESULT_SCHEMA)
+        (
+            DeltaTable.forPath(spark, self.cfg.uri(Tables.GATES))
+            .alias("t")
+            .merge(
+                gdf.alias("s"),
+                "t.query_name = s.query_name AND t.batch_id = s.batch_id AND t.gate = s.gate",
+            )
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
+        bdf = spark.createDataFrame([b_row], schema=DQ_BATCH_SCHEMA)
+        (
+            DeltaTable.forPath(spark, self.cfg.uri(Tables.DQ_BATCHES))
+            .alias("t")
+            .merge(bdf.alias("s"), "t.query_name = s.query_name AND t.batch_id = s.batch_id")
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
+
+    def _write_batch(
+        self,
+        spark: SparkSession,
+        batch_id: int,
+        valid: DataFrame,
+        invalid: DataFrame,
+        flagged: DataFrame,
+        is_late,
+        cutoff: int | None,
+        agg: dict,
+    ) -> None:
+        cfg = self.cfg
+        on_time = valid.where(~is_late)
+
         # 1. watermark state: this batch's max event time (all valid rows, late ones included,
         #    exactly what Spark's own watermark sees), keyed by (query, batch) so a replay
         #    overwrites itself and never changes the cutoff used for the same batch.
-        prev = self._prev_high_water(spark, batch_id)
-        cutoff = None if prev is None else prev - self.delay_s
         state = valid.agg(F.max("event_ts").alias("max_event_ts")).select(
             F.lit(self.query_key).alias("query_key"),
             F.lit(batch_id).cast("long").alias("batch_id"),
@@ -582,8 +837,6 @@ class SilverSink:
         )
         self._step("state", batch_id)
 
-        is_late = F.lit(False) if cutoff is None else F.col("event_ts").cast("long") < F.lit(cutoff)
-        on_time = valid.where(~is_late)
         silver_cols = [c.name for c in SILVER_SCHEMA.fields]
         meta = (
             F.lit(batch_id).cast("long").alias("batch_id"),
@@ -591,10 +844,9 @@ class SilverSink:
         )
 
         # 2. silver events: insert-if-absent on event_id (the effectively-once step).
-        silver_uri = cfg.uri(Tables.SILVER)
         _merge_insert_only(
             spark,
-            silver_uri,
+            cfg.uri(Tables.SILVER),
             on_time.select(
                 *[c for c in silver_cols if c not in ("batch_id", "processed_at")], *meta
             ).select(*silver_cols),
@@ -602,12 +854,12 @@ class SilverSink:
         )
         self._step("silver", batch_id)
 
-        # 3. late events: diverted, not dropped. A "late" row whose event_id is already in silver
-        #    is a duplicate of an accepted event, not a late arrival, so it is excluded.
-        accepted = spark.read.format("delta").load(silver_uri).select("event_id")
-        late = valid.where(is_late).join(accepted, "event_id", "left_anti").persist()
-        late_n = late.count()
+        # 3. late events: diverted, not dropped. A "late" row whose event_id was accepted by an
+        #    earlier batch is a duplicate of an accepted event, not a late arrival (the join
+        #    that sets _prior excludes it).
+        late_n = agg["late"]
         if late_n:
+            late = flagged.where(is_late & F.col("_prior").isNull())
             late_out = late.select(
                 *[c for c in silver_cols if c not in ("batch_id", "processed_at")],
                 *meta,
@@ -616,11 +868,10 @@ class SilverSink:
                 (F.lit(cutoff) - F.col("event_ts").cast("long")).alias("lateness_seconds"),
             ).select(*[c.name for c in LATE_SCHEMA.fields])
             _merge_insert_only(spark, cfg.uri(Tables.LATE), late_out, ("event_id",))
-        late.unpersist()
         self._step("late", batch_id)
 
         # 4. dead letters.
-        dlq_n = self._dead_letters(spark, invalid, batch_id)
+        dlq_n = self._dead_letters(spark, invalid, batch_id, agg["dlq"])
         self._step("dlq", batch_id)
 
         # 5. claim-status rollup from accepted (on-time) events only.
@@ -635,59 +886,98 @@ class SilverSink:
             dlq_count=dlq_n,
         )
 
-    def _dead_letters(self, spark: SparkSession, invalid: DataFrame, batch_id: int) -> int:
-        cfg = self.cfg
-        n = invalid.count()
-        if n == 0:
-            return 0
+    # ------------------------------------------------------------ dead letters
+
+    @staticmethod
+    def _dead_frame(
+        df: DataFrame,
+        *,
+        payload,
+        reason_code,
+        detail,
+        errors,
+        failed_fields,
+        batch_id: int,
+    ) -> DataFrame:
+        """Rows in the DLQ table shape. Key = ``topic:partition:offset`` when the source has
+        offsets (Kafka), else a sha256 of the payload: deterministic, so replays and consumers
+        dedupe on it."""
         key = F.when(
             F.col("source_offset").isNotNull(),
             F.concat_ws(":", "source_topic", "source_partition", "source_offset"),
         ).otherwise(
-            F.concat(
-                F.lit("sha256:"), F.sha2(F.coalesce(F.col("value"), F.lit("").cast("binary")), 256)
-            )
+            F.concat(F.lit("sha256:"), F.sha2(F.coalesce(payload, F.lit("").cast("binary")), 256))
         )
-        dead = invalid.select(
+        return df.select(
             key.alias("dlq_key"),
-            F.col("error_type").alias("reason_code"),
-            F.concat_ws("; ", "errors").alias("reason_detail"),
-            "failed_fields",
+            reason_code.alias("reason_code"),
+            detail.alias("reason_detail"),
+            failed_fields.alias("failed_fields"),
             "source_topic",
             "source_partition",
             "source_offset",
             "source_file",
-            F.col("value").alias("payload"),
+            payload.alias("payload"),
             _envelope_udf(
-                "value", "errors", "error_type", "source_topic", "source_partition", "source_offset"
+                payload, errors, reason_code, "source_topic", "source_partition", "source_offset"
             ).alias("envelope_json"),
             F.lit(batch_id).cast("long").alias("batch_id"),
             F.current_timestamp().alias("dlq_at"),
         ).dropDuplicates(["dlq_key"])
-        _merge_insert_only(spark, cfg.uri(Tables.DLQ), dead, ("dlq_key",))
-        if cfg.dlq_kafka and cfg.bootstrap:
-            # At-least-once: a replayed batch re-publishes. Consumers dedupe on the record key.
-            (
-                dead.select(
-                    F.col("dlq_key").alias("key"),
-                    F.col("envelope_json").alias("value"),
-                    F.array(
-                        F.struct(
-                            F.lit("dlq-reason").alias("key"),
-                            F.col("reason_code").cast("binary").alias("value"),
-                        ),
-                        F.struct(
-                            F.lit("dlq-stage").alias("key"),
-                            F.lit("consumer").cast("binary").alias("value"),
-                        ),
-                    ).alias("headers"),
-                )
-                .write.format("kafka")
-                .option("kafka.bootstrap.servers", cfg.bootstrap)
-                .option("topic", dlq_topic(cfg.topic))
-                .save()
-            )
+
+    def _dead_letters(
+        self, spark: SparkSession, invalid: DataFrame, batch_id: int, n: int | None = None
+    ) -> int:
+        n = invalid.count() if n is None else n
+        if n == 0:
+            return 0
+        dead = self._dead_frame(
+            invalid,
+            payload=F.col("value"),
+            reason_code=F.col("error_type"),
+            detail=F.concat_ws("; ", "errors"),
+            errors=F.col("errors"),
+            failed_fields=F.col("failed_fields"),
+            batch_id=batch_id,
+        )
+        self._store_dead(spark, dead)
         return n
+
+    def _store_dead(self, spark: SparkSession, dead: DataFrame) -> None:
+        cfg = self.cfg
+        _merge_insert_only(spark, cfg.uri(Tables.DLQ), dead, ("dlq_key",))
+        if cfg.dlq_kafka:
+            publish_dead_letters(dead, cfg)
+
+    def _divert(
+        self,
+        spark: SparkSession,
+        invalid: DataFrame,
+        valid: DataFrame,
+        report: GateReport,
+        batch_id: int,
+    ) -> None:
+        """on_fail=divert: the whole batch goes to the dead-letter path and nothing else is
+        written (no silver, late, rollup, or watermark state, so a diverted batch never advances
+        the watermark). Invalid rows keep their own reason codes; valid events get
+        ``gate_diverted`` with a canonical JSON payload (the parsed event re-serialised in
+        contract format), so they pass validation again on replay."""
+        self._dead_letters(spark, invalid, batch_id, report.stats.dlq_rows)
+        ts = F.date_format("event_ts", "yyyy-MM-dd'T'HH:mm:ss'Z'")
+        canon = F.to_json(
+            F.struct(*[(ts if f == "event_ts" else F.col(f)).alias(f) for f in _EVENT_FIELDS])
+        )
+        detail = f"batch {batch_id} diverted: {report.breach_summary()}"
+        dead = self._dead_frame(
+            valid,
+            payload=canon.cast("binary"),
+            reason_code=F.lit(REASON_GATE_DIVERTED),
+            detail=F.lit(detail),
+            errors=F.array(F.lit(detail)),
+            failed_fields=F.array().cast("array<string>"),
+            batch_id=batch_id,
+        )
+        self._store_dead(spark, dead)
 
     def _rollup(self, spark: SparkSession, on_time: DataFrame, batch_id: int) -> None:
         status = (
@@ -799,6 +1089,8 @@ def summarize(spark: SparkSession, cfg: StreamConfig) -> dict[str, int]:
         Tables.DLQ,
         Tables.STATUS,
         Tables.METRICS,
+        Tables.GATES,
+        Tables.DQ_BATCHES,
     ):
         try:
             out[t] = spark.read.format("delta").load(cfg.uri(t)).count()
@@ -840,9 +1132,7 @@ def _wait(spark, cfg, collector, queries: list[StreamingQuery]) -> None:
     deadline = None if cfg.run_seconds is None else time.monotonic() + cfg.run_seconds
     while any(q.isActive for q in queries):
         for q in queries:
-            exc = q.exception()
-            if exc is not None:
-                raise exc
+            _raise_if_failed(q)
         if deadline is not None and time.monotonic() >= deadline:
             for q in queries:
                 q.stop()
@@ -850,9 +1140,19 @@ def _wait(spark, cfg, collector, queries: list[StreamingQuery]) -> None:
         time.sleep(1.0)
         flush_metrics(spark, cfg, collector)
     for q in queries:
-        exc = q.exception()
-        if exc is not None:
-            raise exc
+        _raise_if_failed(q)
+
+
+def _raise_if_failed(q: StreamingQuery) -> None:
+    """Re-raise a query failure; a gate halt becomes a :class:`GateFailure` with a clear message
+    (Spark wraps exceptions raised in foreachBatch in a StreamingQueryException)."""
+    exc = q.exception()
+    if exc is None:
+        return
+    m = re.search(rf"{FAILURE_MARKER}[^\n]*", str(exc))
+    if m:
+        raise GateFailure(m.group(0)) from exc
+    raise exc
 
 
 def run_job(
@@ -860,6 +1160,8 @@ def run_job(
 ) -> JobResult:
     """Run the configured stages. availableNow: bronze to completion, then silver."""
     cfg.validate()
+    if cfg.gates is not None:
+        log.info(json.dumps({"event": "dq_gates_config", **cfg.gates.describe()}, sort_keys=True))
     ensure_tables(spark, cfg)
     collector = MetricsCollector()
     listener = MetricsListener(collector, (BRONZE_QUERY, SILVER_QUERY))

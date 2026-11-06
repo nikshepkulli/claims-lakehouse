@@ -13,7 +13,7 @@ STREAM_BOOTSTRAP ?= redpanda:9092
 STREAM_TOPIC ?= claims.events.v1
 STREAM_ARGS ?=
 # Explicit files: the image's Python is 3.10 and other tests/streaming modules need 3.11 (CI runs the dir)
-STREAM_SPARK_TESTS ?= tests/streaming/test_spark_job.py tests/streaming/test_spark_rules.py
+STREAM_SPARK_TESTS ?= tests/streaming/test_spark_job.py tests/streaming/test_spark_rules.py tests/streaming/test_spark_gates.py tests/streaming/test_dlq_replay.py
 # the job reaches Redpanda's internal listener, so the container joins the compose network
 STREAM_DOCKER_ARGS ?= --network $(STREAM_NETWORK)
 
@@ -45,3 +45,13 @@ streaming-spark-run: ## Run the job once against the stack (STREAM_MODE=availabl
 
 streaming-spark-smoke: ## Integration test against the running stack (5,000 events, availableNow); not in CI
 	bash tests/stack/streaming_spark_smoke.sh
+
+# ---- ticket #13: gates, DLQ topic, replay
+.PHONY: streaming-dlq-replay streaming-dq-smoke
+
+streaming-dlq-replay: ## Re-validate dead letters, append the now-valid ones to bronze (STREAM_ARGS="--source kafka --bootstrap redpanda:9092 --dry-run")
+	$(call STREAM_RUN,python3 -m lakehouse.streaming.spark_job replay-dlq \
+		--root $(STREAM_ROOT) --topic $(STREAM_TOPIC) $(STREAM_ARGS))
+
+streaming-dq-smoke: ## Gates + Kafka DLQ topic + replay against the running stack; not in CI
+	bash tests/stack/streaming_dq_smoke.sh

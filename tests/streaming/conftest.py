@@ -35,6 +35,9 @@ def spark(tmp_path_factory):
         master="local[2]",
         conf={
             "spark.sql.shuffle.partitions": "2",
+            # one session serves every module; the default 1g driver heap OOMs (task
+            # serialization) once ~25 streaming runs have piled up plans and Delta snapshots
+            "spark.driver.memory": "3g",
             "spark.ui.enabled": "false",
             "spark.sql.warehouse.dir": str(wh),
             "spark.databricks.delta.snapshotPartitions": "2",
