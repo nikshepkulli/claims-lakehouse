@@ -1,0 +1,33 @@
+# Standalone Airflow for LOCAL development (ticket #9). Not a production deployment.
+# One container = pinned Spark image (Java 17, Python 3.10) + Airflow 2.10.5 + pyspark/delta +
+# dbt-duckdb, installed once into the named volume `claims-airflow-cache` by entrypoint.sh.
+# The layer jobs run in-process (local[*]) next to the scheduler, so there is no docker-in-docker.
+# Run via `make airflow-up` / `make airflow-test` (mk/airflow.mk). Data lands in ./data/airflow.
+name: claims-airflow
+services:
+  airflow:
+    image: apache/spark@sha256:96dc2bada923824300e1ece564389258934655ba6f463d6daff8753ff0c639ce  # apache/spark:3.5.5-scala2.12-java17-python3-ubuntu
+    user: root
+    entrypoint: ["bash", "/work/orchestration/airflow/entrypoint.sh"]
+    command: ["standalone"]
+    working_dir: /work
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8085}:8080"  # 8080/8081/8082 are taken by the main stack
+    environment:
+      HOME: /cache/home
+      AIRFLOW_HOME: /cache/airflow-home
+      AIRFLOW__CORE__DAGS_FOLDER: /work/orchestration/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "60"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "False"
+      CLAIMS_REPO: /work
+      CLAIMS_DATA_ROOT: /work/data/airflow
+      CLAIMS_ROWS: ${CLAIMS_ROWS:-2000}
+      CLAIMS_DBT_BIN: /cache/bin/dbt
+      CLAIMS_ALERT_WEBHOOK_URL: ${CLAIMS_ALERT_WEBHOOK_URL:-}
+      DBT_PROFILES_DIR: dbt
+    volumes:
+      - ../..:/work
+      - claims-airflow-cache:/cache
+volumes:
+  claims-airflow-cache:

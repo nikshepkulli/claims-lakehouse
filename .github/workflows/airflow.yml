@@ -1,0 +1,53 @@
+name: airflow
+
+# Orchestration (ticket #9): imports the Airflow DAGs with a real Airflow install and runs the
+# structural tests (graph order, retries/SLAs, write scopes, idempotency key). Separate from
+# ci.yml because apache-airflow is a heavy install the other jobs do not need. The Spark/dbt work
+# the DAG calls is exercised by `pipeline e2e` in ci.yml; this job does not run a DAG.
+on:
+  pull_request:
+    paths:
+      - "orchestration/**"
+      - "tests/orchestration/**"
+      - "requirements-airflow.txt"
+      - "mk/airflow.mk"
+      - ".github/workflows/airflow.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airflow-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dag-import:
+    name: airflow dag import + structure
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      AIRFLOW_VERSION: "2.10.5"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__UNIT_TEST_MODE: "True"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-airflow.txt
+      - name: install airflow with the official constraints
+        run: |
+          pip install -r requirements-airflow.txt \
+            -c "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-3.12.txt"
+      - name: init metadata db (sqlite, throwaway)
+        run: airflow db migrate
+      - name: DagBag import test + structural tests
+        run: pytest -p no:cacheprovider -rs tests/orchestration
+      - name: fail on any DAG import error (CLI view of the same check)
+        run: |
+          AIRFLOW__CORE__DAGS_FOLDER="$PWD/orchestration/airflow/dags" airflow dags list-import-errors | tee /tmp/ie.txt
+          ! grep -q "claims_daily.py" /tmp/ie.txt
+      - run: AIRFLOW__CORE__DAGS_FOLDER="$PWD/orchestration/airflow/dags" airflow dags list

@@ -1,0 +1,10 @@
+# Airflow for orchestration/airflow (ticket #9). Install WITH the official constraints, never bare:
+#   PYV=$(python -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+#   pip install -r requirements-airflow.txt \
+#     -c "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-${PYV}.txt"
+# Airflow 2.10 supports Python 3.8-3.12 (CI uses 3.12; the local Docker image has 3.10).
+# Airflow 2.x on purpose: the SLA feature and sla_miss_callback were removed in Airflow 3.
+apache-airflow==2.10.5
+# for the quality_gates task (also pinned in requirements-claimsgen.txt)
+pyarrow
+pytest==8.3.4

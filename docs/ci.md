@@ -53,6 +53,8 @@ Branch protection is a repo setting, not code. Require: `python lint + format`, 
 
 `dbt.yml` (path-filtered, separate from `ci.yml`) builds and tests the dbt project on DuckDB against the gold-shaped test fixture (a fast fallback) and uploads the dbt docs site as an artifact; the real-gold build is the `pipeline e2e` job above. See [dbt.md](dbt.md).
 
+`airflow.yml` (path-filtered, separate from `ci.yml`) installs Apache Airflow 2.10.5 with the official constraints, imports the DAGs in a real `DagBag` and runs `tests/orchestration`. It does not run a DAG. See [orchestration.md](orchestration.md).
+
 ## Dependabot policy
 
 `.github/dependabot.yml` groups updates weekly, with deliberate exceptions:
