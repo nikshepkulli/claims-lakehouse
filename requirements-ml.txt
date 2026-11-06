@@ -1,0 +1,6 @@
+# Runtime deps of src/lakehouse/ml (ticket #27): training, scoring, SageMaker container.
+# numpy and pyarrow are pinned by requirements-claimsgen.txt. pandas is NOT needed.
+-r requirements-claimsgen.txt
+scikit-learn==1.9.1
+duckdb==2.0.0
+PyYAML==6.0.3
