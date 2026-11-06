@@ -4,3 +4,6 @@ delta-spark==3.3.3
 # claimsgen (fixture data) + test runner
 -r requirements-claimsgen.txt
 pytest==8.3.4
+# streaming job validates events with the shared contract helpers (lakehouse.streaming.contract)
+jsonschema==4.26.0
+PyYAML==6.0.3

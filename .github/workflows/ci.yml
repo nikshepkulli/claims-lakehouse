@@ -57,6 +57,8 @@ jobs:
             path: tests/silver/test_silver_e2e.py
           - suite: silver-rules
             path: tests/silver/test_silver_rules.py
+          - suite: streaming
+            path: tests/streaming
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
