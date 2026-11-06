@@ -112,6 +112,22 @@ jobs:
         run: python -m lakehouse.silver --bronze $E2E/bronze --silver $E2E/silver --batch-date all --datasets $DATASETS
       - name: gold (reconciliation failures exit non-zero)
         run: python -m lakehouse.gold --silver $E2E/silver --gold $E2E/gold --batch-date all
+      - name: data quality (Great Expectations per layer; blocking failures exit non-zero)
+        run: |
+          pip install -r requirements-quality.txt
+          rc=0
+          for layer in bronze silver gold; do
+            python -m lakehouse.quality run --layer $layer --root $E2E/$layer --out $E2E/dq || rc=1
+          done
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: data-quality-docs
+          path: |
+            data/e2e/dq/data_docs
+            data/e2e/dq/*-result.json
+          if-no-files-found: ignore
       - name: dbt build on the real gold export
         run: |
           cp dbt/profiles.yml.example dbt/profiles.yml

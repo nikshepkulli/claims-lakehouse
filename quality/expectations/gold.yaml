@@ -1,0 +1,130 @@
+# Gold suites (ticket #22). Gold is the contract layer: columns, types and NOT NULLs equal
+# warehouse/snowflake/01_gold_ddl.sql (via lakehouse.gold.schema), keys are unique, every fact
+# resolves to its dimensions, facts reconcile to silver, SCD2 history is sound, and every column is
+# classified in governance/data_classification.yaml. Almost everything here is blocking: a break
+# means the star schema is wrong, not merely unusual. Domains: docs/data-generator.md.
+layer: gold
+description: Kimball star schema (facts + SCD2 dimensions), reconciliation and exclusion tables.
+
+tables:
+  dim_date:
+    schema_from: gold
+    exact: true
+    classified_in: gold
+    derived:
+      - {name: weekend_flag_ok, kind: eval, expr: "is_weekend == (day_of_week >= 6)"}
+      - {name: key_matches_date, kind: eval, expr: "date_key == year * 10000 + month * 100 + day_of_month"}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 365, note: "volume: at least one calendar year"}
+      - {expectation: expect_column_values_to_be_unique, column: date_key}
+      - {expectation: expect_column_values_to_be_unique, column: full_date}
+      - {expectation: expect_column_values_to_be_between, column: month, min_value: 1, max_value: 12}
+      - {expectation: expect_column_values_to_be_between, column: quarter, min_value: 1, max_value: 4}
+      - {expectation: expect_column_values_to_be_between, column: day_of_week, min_value: 1, max_value: 7}
+      - {expectation: expect_column_values_to_be_between, column: day_of_month, min_value: 1, max_value: 31}
+      - {expectation: expect_column_values_to_be_in_set, column: weekend_flag_ok, value_set: [true]}
+      - {expectation: expect_column_values_to_be_in_set, column: key_matches_date, value_set: [true]}
+  dim_member:
+    schema_from: gold
+    exact: true
+    classified_in: gold
+    derived:
+      - {name: history_ok, kind: scd2, key: member_id, from_col: effective_from, to_col: effective_to, current_col: is_current}
+      - {name: loaded_age_hours, kind: age_hours, column: loaded_at}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_be_unique, column: member_sk}
+      - {expectation: expect_compound_columns_to_be_unique, column_list: [member_id, effective_from]}
+      - {expectation: expect_column_values_to_be_in_set, column: history_ok, value_set: [true], note: "SCD2: one current version per key, no gap, no overlap, flag agrees with effective_to"}
+      - {expectation: expect_column_values_to_be_in_set, column: sex, value_set: [F, M, U]}
+      - {expectation: expect_column_values_to_be_between, column: birth_year, min_value: 1900, max_value: 2100}
+      - {expectation: expect_column_values_to_be_in_set, column: plan_type, value_set: [HMO, PPO, EPO, HDHP, MEDICARE_ADV, MEDICAID_MCO], severity: warn}
+      - {expectation: expect_column_values_to_match_regex, column: member_sk, regex: '^[0-9a-f]{64}$', note: "sha256 hex surrogate key"}
+  dim_provider:
+    schema_from: gold
+    exact: true
+    classified_in: gold
+    derived:
+      - {name: history_ok, kind: scd2, key: provider_id, from_col: effective_from, to_col: effective_to, current_col: is_current}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_be_unique, column: provider_sk}
+      - {expectation: expect_compound_columns_to_be_unique, column_list: [provider_id, effective_from]}
+      - {expectation: expect_column_values_to_be_in_set, column: history_ok, value_set: [true], note: "SCD2 history is sound"}
+      - {expectation: expect_column_values_to_be_in_set, column: cost_tier, value_set: [STANDARD, ELEVATED, HIGH_COST]}
+      - {expectation: expect_column_values_to_be_in_set, column: network_status, value_set: [IN_NETWORK, OUT_OF_NETWORK], severity: warn}
+      - {expectation: expect_column_values_to_match_regex, column: provider_sk, regex: '^[0-9a-f]{64}$'}
+  dim_diagnosis:
+    schema_from: gold
+    exact: true
+    classified_in: gold
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_be_unique, column: diagnosis_sk}
+      - {expectation: expect_column_values_to_be_unique, column: icd10_code}
+      - {expectation: expect_column_values_to_match_regex, column: icd10_code, regex: '^[A-TV-Z]\d[0-9A-Z](\.[0-9A-Z]{1,4})?$'}
+  fact_claim:
+    schema_from: gold
+    exact: true
+    classified_in: gold
+    derived:
+      - {name: member_resolves, kind: fk, column: member_sk, ref: dim_member.member_sk}
+      - {name: provider_resolves, kind: fk, column: provider_sk, ref: dim_provider.provider_sk}
+      - {name: diagnosis_resolves, kind: fk, column: primary_diagnosis_sk, ref: dim_diagnosis.diagnosis_sk, allow_null: true}
+      - {name: service_date_resolves, kind: fk, column: service_date_key, ref: dim_date.date_key}
+      - {name: received_date_resolves, kind: fk, column: received_date_key, ref: dim_date.date_key}
+      - {name: header_equals_lines, kind: child_sums, child: fact_claim_line, key: claim_id, child_key: claim_id, count: line_count, sums: {total_billed_amount: billed_amount, total_allowed_amount: allowed_amount, total_paid_amount: paid_amount}}
+      - {name: loaded_age_hours, kind: age_hours, column: loaded_at}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_be_unique, column: claim_id}
+      - {expectation: expect_column_values_to_be_in_set, column: member_resolves, value_set: [true], note: "referential integrity: fact_claim.member_sk in dim_member"}
+      - {expectation: expect_column_values_to_be_in_set, column: provider_resolves, value_set: [true], note: "referential integrity: fact_claim.provider_sk in dim_provider"}
+      - {expectation: expect_column_values_to_be_in_set, column: diagnosis_resolves, value_set: [true], note: "referential integrity: primary_diagnosis_sk in dim_diagnosis (nullable)"}
+      - {expectation: expect_column_values_to_be_in_set, column: service_date_resolves, value_set: [true], note: "referential integrity: service_date_key in dim_date"}
+      - {expectation: expect_column_values_to_be_in_set, column: received_date_resolves, value_set: [true], note: "referential integrity: received_date_key in dim_date"}
+      - {expectation: expect_column_values_to_be_in_set, column: header_equals_lines, value_set: [true], note: "reconciliation: line_count and totals equal the claim lines"}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_type, value_set: [PROFESSIONAL, INSTITUTIONAL, PHARMACY]}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_status, value_set: [PAID, DENIED]}
+      - {expectation: expect_column_values_to_be_between, column: total_billed_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: total_allowed_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: total_paid_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: line_count, min_value: 1, max_value: 50}
+      - {expectation: expect_column_pair_values_a_to_be_greater_than_b, column_A: received_date_key, column_B: service_date_key, or_equal: true}
+      - {expectation: expect_column_min_to_be_between, column: loaded_age_hours, max_value: 168, severity: warn, note: "freshness: newest fact row loaded within 7 days"}
+  fact_claim_line:
+    schema_from: gold
+    exact: true
+    classified_in: gold
+    derived:
+      - {name: claim_resolves, kind: fk, column: claim_id, ref: fact_claim.claim_id}
+      - {name: service_date_resolves, kind: fk, column: service_date_key, ref: dim_date.date_key}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_be_unique, column: line_id}
+      - {expectation: expect_compound_columns_to_be_unique, column_list: [claim_id, line_number]}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_resolves, value_set: [true], note: "referential integrity: fact_claim_line.claim_id in fact_claim"}
+      - {expectation: expect_column_values_to_be_in_set, column: service_date_resolves, value_set: [true], note: "referential integrity: service_date_key in dim_date"}
+      - {expectation: expect_column_values_to_match_regex, column: procedure_code, regex: '^(\d{5}|[A-V]\d{4})$'}
+      - {expectation: expect_column_values_to_be_between, column: billed_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: allowed_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: paid_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: units, min_value: 1}
+  gold_reconciliation:
+    schema_from: gold
+    derived:
+      - {name: identity_recomputed, kind: eval, expr: "silver_rows == gold_rows + excluded_rows"}
+      - {name: gold_rows_match_table, kind: batch_count, table_col: gold_table, batch_col: batch_id, count_col: gold_rows, ref_batch_col: load_batch_id, where: "gold_table in ['fact_claim','fact_claim_line']"}
+      - {name: exclusion_share_ok, kind: eval, expr: "excluded_rows <= 0.1 * silver_rows"}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_be_in_set, column: identity_ok, value_set: [true], note: "gold job asserted silver = gold + excluded"}
+      - {expectation: expect_column_values_to_be_in_set, column: identity_recomputed, value_set: [true], note: "reconciliation: identity recomputed from the recorded counts"}
+      - {expectation: expect_column_values_to_be_in_set, column: gold_rows_match_table, value_set: [true], note: "reconciliation: recorded gold_rows equals rows really in the fact table"}
+      - {expectation: expect_column_values_to_be_between, column: key_violations, min_value: 0, max_value: 0}
+      - {expectation: expect_column_values_to_be_in_set, column: exclusion_share_ok, value_set: [true], severity: warn, note: "volume: gold holds back at most 10% of silver rows"}
+  gold_exclusions:
+    schema_from: gold
+    expectations:
+      - {expectation: expect_column_values_to_not_be_null, column: reason_code}
+      - {expectation: expect_column_values_to_not_be_in_set, column: reason_code, value_set: [UNRESOLVED_MEMBER, UNRESOLVED_PROVIDER], note: "unresolved dimension = ordering error, never a data defect"}
