@@ -1,5 +1,5 @@
 ruff==0.17.4
-pytest==8.3.4
+pytest==9.2.0
 sqlfluff==4.5.0
 
 # claimsgen runtime deps (tests import them)
