@@ -12,5 +12,9 @@ PyYAML==6.0.3
 # data-quality framework tests (Great Expectations, pandas, delta-rs; ticket #22)
 -r requirements-quality.txt
 
-# feature engineering tests (tests/features, ticket #26)
+# governed GenAI Q&A (src/lakehouse/genai, ticket #28): tests need the parser; boto3 (Bedrock)
+# is optional and tests inject a stub client. See requirements-genai.txt.
+sqlglot==30.29.0
+
+# DuckDB for tests/features (ticket #26) and tests/genai (ticket #28)
 duckdb==2.0.0

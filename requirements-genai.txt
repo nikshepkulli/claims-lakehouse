@@ -1,0 +1,7 @@
+# Runtime deps for src/lakehouse/genai (python >= 3.11). Ticket #28, docs/genai.md.
+sqlglot==30.29.0
+duckdb==2.0.0
+PyYAML==6.0.3
+# Only needed for `--provider bedrock`. Credentials come from the standard AWS chain
+# (env vars / profile / role); none are stored in this repo.
+boto3==1.43.125

@@ -1,0 +1,336 @@
+# Golden set for the deterministic evaluation harness (lakehouse.genai.evaluation).
+# Each item: a question, the raw output a model is SCRIPTED to return for it (model_output; a
+# fenced ```sql block), and an independently written reference_sql. The harness runs
+# model_output through the FULL pipeline (guardrails + sandbox) and compares its result set with
+# reference_sql run on the unrestricted gold tables. `ordered: true` compares row order too.
+#
+# This measures the pipeline plumbing and guardrails against hand-written SQL. It does NOT
+# measure how accurate any real LLM is: model_output is written by a human, not generated.
+version: 1
+items:
+  - id: g01_total_claims
+    question: How many claims are there in total?
+    model_output: |
+      ```sql
+      SELECT COUNT(*) AS total_claims FROM fact_claim
+      ```
+    reference_sql: SELECT count(*) FROM fact_claim
+
+  - id: g02_total_paid
+    question: What is the total paid amount across all claims?
+    model_output: |
+      ```sql
+      SELECT SUM(total_paid_amount) AS total_paid FROM fact_claim
+      ```
+    reference_sql: SELECT sum(total_paid_amount) FROM fact_claim
+
+  - id: g03_claims_by_type
+    question: Claim count by claim type, highest first.
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT claim_type, COUNT(*) AS n FROM fact_claim GROUP BY claim_type ORDER BY n DESC, claim_type
+      ```
+    reference_sql: SELECT claim_type, count(*) FROM fact_claim GROUP BY 1 ORDER BY 2 DESC, 1
+
+  - id: g04_denial_rate_by_type
+    question: What is the denial rate for each claim type?
+    model_output: |
+      ```sql
+      SELECT claim_type,
+             ROUND(SUM(CASE WHEN claim_status = 'DENIED' THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS denial_rate
+      FROM fact_claim GROUP BY claim_type
+      ```
+    reference_sql: |
+      SELECT claim_type, round(count(*) FILTER (WHERE claim_status = 'DENIED') * 1.0 / count(*), 4)
+      FROM fact_claim GROUP BY 1
+
+  - id: g05_billed_by_status
+    question: Total billed amount by claim status.
+    model_output: |
+      ```sql
+      SELECT claim_status, SUM(total_billed_amount) AS billed FROM fact_claim GROUP BY claim_status
+      ```
+    reference_sql: SELECT claim_status, sum(total_billed_amount) FROM fact_claim GROUP BY 1
+
+  - id: g06_top_pos
+    question: Which 5 places of service have the most claims?
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT place_of_service, COUNT(*) AS n FROM fact_claim
+      GROUP BY place_of_service ORDER BY n DESC, place_of_service LIMIT 5
+      ```
+    reference_sql: |
+      SELECT place_of_service, count(*) FROM fact_claim GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5
+
+  - id: g07_claims_by_year
+    question: How many claims were serviced in each calendar year?
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT d.year, COUNT(*) AS claims
+      FROM fact_claim f JOIN dim_date d ON f.service_date_key = d.date_key
+      GROUP BY d.year ORDER BY d.year
+      ```
+    reference_sql: |
+      SELECT d.year, count(*) FROM fact_claim f JOIN dim_date d ON d.date_key = f.service_date_key
+      GROUP BY 1 ORDER BY 1
+
+  - id: g08_paid_by_quarter
+    question: Total paid amount by year and quarter.
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT d.year, d.quarter, SUM(f.total_paid_amount) AS paid
+      FROM fact_claim AS f INNER JOIN dim_date AS d ON f.service_date_key = d.date_key
+      GROUP BY d.year, d.quarter ORDER BY d.year, d.quarter
+      ```
+    reference_sql: |
+      SELECT d.year, d.quarter, sum(f.total_paid_amount)
+      FROM fact_claim f JOIN dim_date d ON f.service_date_key = d.date_key GROUP BY 1, 2 ORDER BY 1, 2
+
+  - id: g09_top_specialties_allowed
+    question: Top 5 provider specialties by total allowed amount.
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT p.specialty, SUM(f.total_allowed_amount) AS allowed
+      FROM fact_claim f JOIN dim_provider p ON f.provider_sk = p.provider_sk
+      GROUP BY p.specialty ORDER BY allowed DESC, p.specialty LIMIT 5
+      ```
+    reference_sql: |
+      SELECT p.specialty, sum(f.total_allowed_amount) FROM fact_claim f
+      JOIN dim_provider p USING (provider_sk) GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5
+
+  - id: g10_providers_by_network
+    question: How many current providers are in each network status?
+    model_output: |
+      ```sql
+      SELECT network_status, COUNT(*) AS providers FROM dim_provider
+      WHERE is_current = TRUE GROUP BY network_status
+      ```
+    reference_sql: SELECT network_status, count(*) FROM dim_provider WHERE is_current GROUP BY 1
+
+  - id: g11_avg_billed_by_tier
+    question: Average billed amount per claim by provider cost tier.
+    model_output: |
+      ```sql
+      SELECT p.cost_tier, ROUND(AVG(f.total_billed_amount), 2) AS avg_billed
+      FROM fact_claim f JOIN dim_provider p ON f.provider_sk = p.provider_sk GROUP BY p.cost_tier
+      ```
+    reference_sql: |
+      SELECT p.cost_tier, round(avg(f.total_billed_amount), 2) FROM fact_claim f
+      JOIN dim_provider p ON p.provider_sk = f.provider_sk GROUP BY 1
+
+  - id: g12_members_by_plan
+    question: How many current members are on each plan type?
+    model_output: |
+      ```sql
+      SELECT plan_type, COUNT(*) AS members FROM dim_member WHERE is_current GROUP BY plan_type
+      ```
+    reference_sql: SELECT plan_type, count(*) FROM dim_member WHERE is_current = true GROUP BY 1
+
+  - id: g13_members_top_states
+    question: Which 5 states have the most current members?
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT state, COUNT(*) AS members FROM dim_member WHERE is_current
+      GROUP BY state ORDER BY members DESC, state LIMIT 5
+      ```
+    reference_sql: |
+      SELECT state, count(*) FROM dim_member WHERE is_current GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5
+
+  - id: g14_members_with_claims
+    question: How many distinct members have at least one claim?
+    model_output: |
+      ```sql
+      SELECT COUNT(DISTINCT member_sk) AS members_with_claims FROM fact_claim
+      ```
+    reference_sql: SELECT count(DISTINCT member_sk) FROM fact_claim
+
+  - id: g15_avg_paid_by_procedure
+    question: Top 5 procedure codes by average paid amount per line.
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT procedure_code, ROUND(AVG(paid_amount), 2) AS avg_paid, COUNT(*) AS lines
+      FROM fact_claim_line GROUP BY procedure_code
+      ORDER BY avg_paid DESC, procedure_code LIMIT 5
+      ```
+    reference_sql: |
+      SELECT procedure_code, round(avg(paid_amount), 2), count(*) FROM fact_claim_line
+      GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5
+
+  - id: g16_units_by_procedure
+    question: Which 3 procedure codes have the most total units?
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT procedure_code, SUM(units) AS total_units FROM fact_claim_line
+      GROUP BY procedure_code ORDER BY total_units DESC, procedure_code LIMIT 3
+      ```
+    reference_sql: |
+      SELECT procedure_code, sum(units) FROM fact_claim_line GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 3
+
+  - id: g17_claims_by_chapter
+    question: Number of claims by ICD-10 chapter of the primary diagnosis.
+    model_output: |
+      ```sql
+      SELECT dx.icd10_chapter, COUNT(*) AS claims
+      FROM fact_claim f JOIN dim_diagnosis dx ON f.primary_diagnosis_sk = dx.diagnosis_sk
+      GROUP BY dx.icd10_chapter
+      ```
+    reference_sql: |
+      SELECT dx.icd10_chapter, count(*) FROM fact_claim f
+      JOIN dim_diagnosis dx ON dx.diagnosis_sk = f.primary_diagnosis_sk GROUP BY 1
+
+  - id: g18_top_diagnoses
+    question: Top 5 primary diagnoses by claim count, with their description.
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT dx.icd10_code, dx.description, COUNT(*) AS claims
+      FROM fact_claim f JOIN dim_diagnosis dx ON f.primary_diagnosis_sk = dx.diagnosis_sk
+      GROUP BY dx.icd10_code, dx.description ORDER BY claims DESC, dx.icd10_code LIMIT 5
+      ```
+    reference_sql: |
+      SELECT dx.icd10_code, dx.description, count(*) FROM fact_claim f
+      JOIN dim_diagnosis dx ON dx.diagnosis_sk = f.primary_diagnosis_sk
+      GROUP BY 1, 2 ORDER BY 3 DESC, 1 LIMIT 5
+
+  - id: g19_denied_by_plan
+    question: How many denied claims are there for each member plan type?
+    model_output: |
+      ```sql
+      SELECT m.plan_type, COUNT(*) AS denied_claims
+      FROM fact_claim f JOIN dim_member m ON f.member_sk = m.member_sk
+      WHERE f.claim_status = 'DENIED' GROUP BY m.plan_type
+      ```
+    reference_sql: |
+      SELECT m.plan_type, count(*) FROM fact_claim f JOIN dim_member m USING (member_sk)
+      WHERE f.claim_status = 'DENIED' GROUP BY 1
+
+  - id: g20_avg_lines_by_type
+    question: Average number of lines per claim by claim type.
+    model_output: |
+      ```sql
+      SELECT claim_type, ROUND(AVG(line_count), 3) AS avg_lines FROM fact_claim GROUP BY claim_type
+      ```
+    reference_sql: SELECT claim_type, round(avg(line_count), 3) FROM fact_claim GROUP BY 1
+
+  - id: g21_monthly_trend
+    question: Monthly claim count trend, oldest month first.
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT d.year, d.month, COUNT(*) AS claims
+      FROM fact_claim f JOIN dim_date d ON f.service_date_key = d.date_key
+      GROUP BY d.year, d.month ORDER BY d.year, d.month
+      ```
+    reference_sql: |
+      SELECT d.year, d.month, count(*) FROM fact_claim f JOIN dim_date d
+      ON d.date_key = f.service_date_key GROUP BY 1, 2 ORDER BY 1, 2
+
+  - id: g22_largest_claims
+    question: Which 3 claims have the highest billed amount?
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT claim_id, total_billed_amount FROM fact_claim
+      ORDER BY total_billed_amount DESC, claim_id LIMIT 3
+      ```
+    reference_sql: |
+      SELECT claim_id, total_billed_amount FROM fact_claim ORDER BY 2 DESC, 1 LIMIT 3
+
+  - id: g23_weekend_share
+    question: What share of claims were serviced on a weekend?
+    model_output: |
+      ```sql
+      SELECT ROUND(AVG(CASE WHEN d.is_weekend THEN 1.0 ELSE 0.0 END), 4) AS weekend_share
+      FROM fact_claim f JOIN dim_date d ON f.service_date_key = d.date_key
+      ```
+    reference_sql: |
+      SELECT round(count(*) FILTER (WHERE d.is_weekend) * 1.0 / count(*), 4)
+      FROM fact_claim f JOIN dim_date d ON d.date_key = f.service_date_key
+
+  - id: g24_providers_per_state
+    question: Number of current providers in each state.
+    model_output: |
+      ```sql
+      SELECT state, COUNT(*) AS providers FROM dim_provider WHERE is_current GROUP BY state
+      ```
+    reference_sql: SELECT state, count(*) FROM dim_provider WHERE is_current GROUP BY 1
+
+  - id: g25_allowed_vs_paid
+    question: What is the overall ratio of paid to allowed amount?
+    model_output: |
+      ```sql
+      SELECT ROUND(SUM(total_paid_amount) / NULLIF(SUM(total_allowed_amount), 0), 4) AS paid_to_allowed
+      FROM fact_claim
+      ```
+    reference_sql: |
+      SELECT round(sum(total_paid_amount) / nullif(sum(total_allowed_amount), 0), 4) FROM fact_claim
+
+  - id: g26_claims_by_sex
+    question: Number of claims by member sex.
+    model_output: |
+      ```sql
+      SELECT m.sex, COUNT(*) AS claims FROM fact_claim f
+      JOIN dim_member m ON f.member_sk = m.member_sk GROUP BY m.sex
+      ```
+    reference_sql: |
+      SELECT m.sex, count(*) FROM fact_claim f JOIN dim_member m ON m.member_sk = f.member_sk GROUP BY 1
+
+  - id: g27_denial_rate_by_specialty
+    question: Denial rate by provider specialty, only specialties with at least 10 claims.
+    ordered: true
+    model_output: |
+      ```sql
+      SELECT p.specialty,
+             ROUND(SUM(CASE WHEN f.claim_status = 'DENIED' THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS denial_rate,
+             COUNT(*) AS claims
+      FROM fact_claim f JOIN dim_provider p ON f.provider_sk = p.provider_sk
+      GROUP BY p.specialty HAVING COUNT(*) >= 10 ORDER BY denial_rate DESC, p.specialty
+      ```
+    reference_sql: |
+      SELECT p.specialty, round(count(*) FILTER (WHERE f.claim_status = 'DENIED') * 1.0 / count(*), 4),
+             count(*)
+      FROM fact_claim f JOIN dim_provider p USING (provider_sk)
+      GROUP BY 1 HAVING count(*) >= 10 ORDER BY 2 DESC, 1
+
+  - id: g28_multi_line_claims
+    question: How many claims have more than 3 lines?
+    model_output: |
+      ```sql
+      SELECT COUNT(*) AS multi_line_claims FROM (
+        SELECT claim_id FROM fact_claim_line GROUP BY claim_id HAVING COUNT(*) > 3
+      ) AS t
+      ```
+    reference_sql: |
+      SELECT count(*) FROM (SELECT claim_id FROM fact_claim_line GROUP BY 1 HAVING count(*) > 3)
+
+  - id: g29_out_of_network_claims
+    question: What percentage of claims went to out-of-network providers?
+    model_output: |
+      ```sql
+      WITH j AS (
+        SELECT f.claim_id, p.network_status FROM fact_claim f
+        JOIN dim_provider p ON f.provider_sk = p.provider_sk
+      )
+      SELECT ROUND(100.0 * SUM(CASE WHEN network_status = 'OUT_OF_NETWORK' THEN 1 ELSE 0 END) / COUNT(*), 2) AS pct_oon
+      FROM j
+      ```
+    reference_sql: |
+      SELECT round(100.0 * count(*) FILTER (WHERE p.network_status = 'OUT_OF_NETWORK') / count(*), 2)
+      FROM fact_claim f JOIN dim_provider p USING (provider_sk)
+
+  - id: g30_paid_on_denied
+    question: How much was paid on denied claims in total?
+    model_output: |
+      ```sql
+      SELECT COALESCE(SUM(total_paid_amount), 0) AS paid_on_denied FROM fact_claim WHERE claim_status = 'DENIED'
+      ```
+    reference_sql: |
+      SELECT coalesce(sum(total_paid_amount), 0) FROM fact_claim WHERE claim_status = 'DENIED'
