@@ -125,7 +125,7 @@ The gate is a plain CLI whose exit code is the contract, so any scheduler can fa
 |---|---|
 | `tests/quality` (clean fixture + injected defects + CLI + docs build) on Python 3.13, GE 1.11.3, pandas 2.3.3, deltalake 1.6.6 | ran locally |
 | Same tests in the `pytest` CI job (Python 3.11) | CI |
-| Suites against the **real Spark/Delta output** of claimsgen (2000 claims, seed 42) -> bronze -> silver -> gold | CI only (`pipeline e2e`); not reproduced locally in this change (Docker Desktop was unavailable) |
+| Suites against the **real Spark/Delta output** of claimsgen (2000 claims, seed 42) -> bronze -> silver -> gold | CI `pipeline e2e` passed (PR #82): bronze 53 expectations / 5 expected warnings (injected duplicates, bad codes, negative amounts, schema drift), silver 69 / 1 warning (5 headers with a negative total after a negative line was quarantined), gold 152 / 0. Not reproduced locally (Docker Desktop was unavailable) |
 | HTML data docs built and uploaded as an artifact | CI (`data-quality-docs`) |
 | S3 / ADLS / Databricks / Snowflake | not run |
 | Spark-side execution of GE (the suites are written for pandas) | not built; fine at this scale (2000 claims), the loader would need sampling or a Spark datasource for tens of millions of rows |
