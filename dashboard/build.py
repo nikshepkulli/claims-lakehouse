@@ -10,6 +10,10 @@ with CSS, JS and the data inlined. The page makes no network requests. All data 
 Pass ``--marts-db`` to reuse marts that were already built (skips dbt, e.g. when CI built them
 for the dbt job). Optional inputs for the data-quality view: ``--raw`` (claimsgen output with
 ``defects_manifest.json``), ``--reconciliation`` and ``--quality-json`` (see ``quality.py``).
+The "Pipeline runs" view
+(lineage graph, run timeline, quality trend; ticket #30) takes ``--lineage-events``,
+``--column-lineage``, ``--runs``, ``--alerts`` and ``--quality-history`` (see ``pipeline.py``);
+without them it says "not supplied" and names the command that produces each.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from dashboard import metrics, quality
+from dashboard import metrics, pipeline, quality
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
@@ -134,7 +138,13 @@ def _with_labels(rows: list[dict]) -> list[dict]:
     return [{**r, "provider_label": short_label(str(r["provider_id"]))} for r in rows]
 
 
-def assemble(queries: dict[str, dict], qual: dict, gold: Path, gold_label: str) -> dict:
+def assemble(
+    queries: dict[str, dict],
+    qual: dict,
+    gold: Path,
+    gold_label: str,
+    pipe: dict | None = None,
+) -> dict:
     """Combine query results and quality inputs into the single payload the page renders."""
     q = {k: v["rows"] for k, v in queries.items()}
     monthly = q["d01_monthly_cost_and_denials"]
@@ -223,6 +233,9 @@ def assemble(queries: dict[str, dict], qual: dict, gold: Path, gold_label: str) 
             "risk_tiers": q["05_high_cost_member_cohort"],
         },
         "quality": qual,
+        "pipeline": pipe
+        if pipe is not None
+        else pipeline.pipeline_section(),  # every input "not supplied"
     }
 
 
@@ -251,13 +264,21 @@ def quality_section(
     }
 
 
+def _script() -> str:
+    """app.js with the pipeline view (pipeline.js) spliced in at its marker."""
+    js = (HERE / "app.js").read_text()
+    if js.count("/*__PIPELINE__*/") != 1:
+        raise SystemExit("error: app.js must contain exactly one /*__PIPELINE__*/ marker")
+    return js.replace("/*__PIPELINE__*/", (HERE / "pipeline.js").read_text())
+
+
 def render(payload: dict) -> str:
     """Inline CSS, JS and data into the HTML template. Output has no external references."""
     tpl = (HERE / "template.html").read_text()
     data = json.dumps(payload, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
     return (
         tpl.replace("/*__CSS__*/", (HERE / "style.css").read_text())
-        .replace("/*__JS__*/", (HERE / "app.js").read_text())
+        .replace("/*__JS__*/", _script())
         .replace("__DATA__", data)
     )
 
@@ -270,6 +291,7 @@ def build(
     reconciliation: Path | None = None,
     quality_json: Path | None = None,
     gold_label: str = "gold-shaped test fixture",
+    pipe: dict | None = None,
 ) -> Path:
     import duckdb
 
@@ -285,7 +307,7 @@ def build(
         queries = run_queries(con, _load_runner())
         con.close()
     qual = quality_section(gold, raw, reconciliation, quality_json)
-    payload = assemble(queries, qual, gold, gold_label)
+    payload = assemble(queries, qual, gold, gold_label, pipe)
     out.mkdir(parents=True, exist_ok=True)
     target = out / "index.html"
     target.write_text(render(payload), encoding="utf-8")
@@ -307,8 +329,35 @@ def main(argv: list[str] | None = None) -> int:
         default="gold-shaped test fixture",
         help="how the page describes the source (e.g. 'Spark gold export')",
     )
+    g = ap.add_argument_group(
+        "pipeline runs view (#30); each input optional, see dashboard/pipeline.py"
+    )
+    g.add_argument("--lineage-events", type=Path, help="OpenLineage JSON lines (lineage CLI)")
+    g.add_argument("--column-lineage", type=Path, help="lineage/column_lineage.yaml")
+    g.add_argument("--runs", type=Path, help="run ledger: Parquet dir/file or JSON lines")
+    g.add_argument("--alerts", type=Path, help="alerts.jsonl from observability check")
+    g.add_argument(
+        "--quality-history",
+        type=Path,
+        nargs="+",
+        help="quality *-result.json files or directories, one per run",
+    )
+    g.add_argument(
+        "--pipeline-label",
+        help="label shown on the view, e.g. 'sample run from the synthetic fixture'",
+    )
     a = ap.parse_args(argv)
-    target = build(a.gold, a.out, a.marts_db, a.raw, a.reconciliation, a.quality_json, a.gold_label)
+    pipe = pipeline.pipeline_section(
+        events=a.lineage_events,
+        column_lineage=a.column_lineage,
+        runs=a.runs,
+        alerts=a.alerts,
+        quality_history=a.quality_history,
+        label=a.pipeline_label,
+    )
+    target = build(
+        a.gold, a.out, a.marts_db, a.raw, a.reconciliation, a.quality_json, a.gold_label, pipe
+    )
     print(f"wrote {target} ({target.stat().st_size / 1024:.0f} KiB)")
     return 0
 

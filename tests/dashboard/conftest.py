@@ -51,3 +51,43 @@ def built(tmp_path_factory):
         "payload": json.loads(m.group(1)),
         "seconds": elapsed,
     }
+
+
+@pytest.fixture(scope="session")
+def sample(tmp_path_factory):
+    """Run dashboard.sample (real observability / lineage / quality CLIs) once. Skips w/o deps."""
+    pytest.importorskip("great_expectations")
+    pytest.importorskip("deltalake")
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("yaml")
+    out = tmp_path_factory.mktemp("sample")
+    r = subprocess.run(
+        [sys.executable, "-m", "dashboard.sample", "--out", str(out)],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )  # fmt: skip
+    assert r.returncode == 0, r.stdout + r.stderr
+    return out
+
+
+@pytest.fixture(scope="session")
+def pipeline_built(built, sample):
+    """The page rebuilt with every pipeline input from the sample run."""
+    from dashboard import pipeline
+    from dashboard.build import build
+
+    pipe = pipeline.pipeline_section(
+        events=sample / "lineage" / "events.jsonl",
+        column_lineage=ROOT / "lineage" / "column_lineage.yaml",
+        runs=sample / "ops" / "pipeline_runs",
+        alerts=sample / "ops" / "alerts.jsonl",
+        quality_history=[sample / "dq"],
+        label="sample run from the synthetic fixture",
+    )
+    index = build(built["gold"], built["work"] / "site-pipeline", raw=built["raw"], pipe=pipe)
+    html = index.read_text(encoding="utf-8")
+    m = re.search(r'<script type="application/json" id="dashboard-data">(.*?)</script>', html, re.S)
+    return {
+        "html": html,
+        "payload": json.loads(m.group(1)),
+        "pipe": json.loads(m.group(1))["pipeline"],
+    }
