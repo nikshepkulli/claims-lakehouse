@@ -17,6 +17,7 @@ Start with the [README](../README.md) for the overview. Terms are explained in t
 | Bronze | [bronze.md](bronze.md) |
 | Silver | [silver.md](silver.md) |
 | Gold | [gold.md](gold.md) |
+| Orchestration | [orchestration.md](orchestration.md) |
 | Streaming | [streaming.md](streaming.md), [streaming-spark.md](streaming-spark.md) |
 | dbt and analytics | [dbt.md](dbt.md), [analytics-guide.md](analytics-guide.md) |
 | Snowflake | [snowflake.md](snowflake.md) |
