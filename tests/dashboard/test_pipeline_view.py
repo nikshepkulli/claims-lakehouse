@@ -327,10 +327,10 @@ def test_column_map_equals_column_lineage_yaml(pipeline_built):
         assert [c["name"] for c in cols[table]] == list(spec)
         for c in cols[table]:
             y = spec[c["name"]]
-            assert [f'{s["layer"]}.{s["table"]}.{s["column"]}' for s in c["sources"]] == y.get(
+            assert [f"{s['layer']}.{s['table']}.{s['column']}" for s in c["sources"]] == y.get(
                 "sources", []
             )
-            assert [f'{s["layer"]}.{s["table"]}.{s["column"]}' for s in c["indirect"]] == y.get(
+            assert [f"{s['layer']}.{s['table']}.{s['column']}" for s in c["indirect"]] == y.get(
                 "indirect", []
             )
             assert c["masking"] == bool(y.get("masking"))

@@ -87,9 +87,9 @@ def test_every_table_is_idempotent_and_commented() -> None:
         assert statements
         for stmt in statements:
             assert re.search(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+\w+", stmt, re.I), stmt[:80]
-            assert re.search(
-                r"COMMENT\s*=\s*'[^']{10,}'", stmt
-            ), f"table without COMMENT: {stmt[:80]}"
+            assert re.search(r"COMMENT\s*=\s*'[^']{10,}'", stmt), (
+                f"table without COMMENT: {stmt[:80]}"
+            )
             tables.append(stmt)
     assert len(tables) >= len(GOLD_TABLES) * 2  # gold + landing, plus load_audit
 
@@ -130,9 +130,9 @@ def test_copy_into_is_safe_and_audited() -> None:
     copies = re.findall(r"COPY INTO landing_(\w+)", sql)
     assert set(copies) == GOLD_TABLES
     assert sql.count("ON_ERROR = ABORT_STATEMENT") == len(GOLD_TABLES)
-    assert not re.search(
-        r"FORCE\s*=\s*TRUE", sql, re.I
-    ), "FORCE must be a deliberate, documented reload"
+    assert not re.search(r"FORCE\s*=\s*TRUE", sql, re.I), (
+        "FORCE must be a deliberate, documented reload"
+    )
     assert "INSERT INTO load_audit" in sql and "NOT EXISTS" in sql
     assert "copy_history" in sql.lower()
     assert "PURGE" not in sql.upper()

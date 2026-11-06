@@ -54,9 +54,9 @@ def test_raw_values_only_for_the_transformer_role(sql90):
         assert roles == ["CLAIMS_DEV_TRANSFORMER"], name
         first_when = re.search(r"WHEN (.*?) THEN val", expr).group(1)
         assert "TRANSFORMER" in first_when  # the privileged branch is the only one returning val
-        assert (
-            len(re.findall(r"THEN val$", expr, re.M)) == 1
-        ), f"{name} returns raw val more than once"
+        assert len(re.findall(r"THEN val$", expr, re.M)) == 1, (
+            f"{name} returns raw val more than once"
+        )
         assert "ELSE" not in expr, f"{name}: no ELSE so unknown tag values fail closed to NULL"
 
 

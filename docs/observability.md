@@ -22,6 +22,7 @@ Jobs are not modified. Adopt per job either way:
 
 ```python
 from lakehouse.observability import track_run
+
 with track_run("silver", "silver_batch", table="claims", batch_id="2024-01-05") as run:
     ...
     run.set(rows_in=n_in, rows_out=n_out, rows_quarantined=n_bad)
