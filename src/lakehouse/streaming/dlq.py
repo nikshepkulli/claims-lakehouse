@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .config import dlq_topic
 
@@ -42,7 +43,7 @@ def build_envelope(
         "schema_id": schema_id,
         "error_type": error_type,
         "errors": errors,
-        "failed_at": (failed_at or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "failed_at": (failed_at or datetime.now(ZoneInfo("UTC"))).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "payload_b64": base64.b64encode(raw_bytes).decode("ascii"),
     }
 

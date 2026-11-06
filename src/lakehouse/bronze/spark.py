@@ -17,6 +17,7 @@ def build_spark(
     master: str | None = None,
     bronze_root: str = "",
     conf: dict[str, str] | None = None,
+    extra_packages: list[str] | None = None,
 ) -> SparkSession:
     """Create (or reuse) a Delta-enabled session.
 
@@ -24,6 +25,7 @@ def build_spark(
     environment: ``LAKEHOUSE_S3_ENDPOINT`` (for MinIO, e.g. ``http://localhost:9000``),
     ``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY`` (falls back to ``MINIO_ROOT_USER`` /
     ``MINIO_ROOT_PASSWORD``). Real AWS needs none of the endpoint settings.
+    ``extra_packages`` are additional Maven coordinates resolved at startup.
     """
     b = (
         SparkSession.builder.appName(app_name)
@@ -37,7 +39,7 @@ def build_spark(
         b = b.master(master)
     for k, v in (conf or {}).items():
         b = b.config(k, v)
-    packages: list[str] = []
+    packages: list[str] = list(extra_packages or [])  # e.g. the Kafka source (streaming job)
     if bronze_root.startswith(("s3a://", "s3://")):
         packages.append(HADOOP_AWS)
         endpoint = os.environ.get("LAKEHOUSE_S3_ENDPOINT")
