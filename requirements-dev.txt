@@ -21,3 +21,6 @@ duckdb==2.0.0
 
 # claim-denial-risk model (src/lakehouse/ml, ticket #27): scikit-learn for tests/ml
 -r requirements-ml.txt
+
+# OpenLineage event schema validation in tests/lineage (ticket #24)
+-r requirements-lineage.txt

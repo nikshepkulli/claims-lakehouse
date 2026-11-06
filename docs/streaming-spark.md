@@ -2,7 +2,7 @@
 
 Consumes the `claims.events.v1` topic produced by [streaming.md](streaming.md) and lands it in Delta: a raw bronze table, then a validated, deduplicated silver table with late-data diversion, a dead-letter table, a claim-status rollup and a metrics table.
 
-Ticket #13 adds per-batch data-quality gates, a finished Kafka dead-letter topic and an idempotent DLQ replay (sections [Data-quality gates](#data-quality-gates-ticket-13), [Dead-letter topic](#dead-letter-topic-dlq-kafka), [Replaying dead letters](#replaying-dead-letters-replay-dlq)).
+Ticket #13 adds per-batch data-quality gates, a finished Kafka dead-letter topic and an idempotent DLQ replay (sections [Data-quality gates](#data-quality-gates-ticket-13), [Dead-letter topic](#dead-letter-topic---dlq-kafka), [Replaying dead letters](#replaying-dead-letters-replay-dlq)).
 
 Status: tested locally (PySpark 3.5.9 + Delta 3.3.3 in the pinned `apache/spark` image) with a file source in CI and against the local Redpanda stack by `tests/stack/streaming_spark_smoke.sh`. It has not run on a managed Kafka service or a real cloud.
 

@@ -71,3 +71,35 @@ def test_load_reconciliation_json_keeps_documented_columns(tmp_path):
 
 def test_manifest_absent(tmp_path):
     assert quality.load_manifest(tmp_path) is None
+
+
+def test_short_label_keeps_tail_and_leaves_short_ids():
+    from dashboard.build import short_label
+
+    tok = "tok_fx_81314f0a9c2d7e5b6a4f3c1d2e8b9a07"
+    assert short_label(tok) == "…" + tok[-6:]
+    assert len(short_label(tok)) == 7
+    assert short_label("P0001") == "P0001"
+
+
+def test_load_quality_json_accepts_runner_result(tmp_path):
+    """The runner's own gold-result.json: one suite per table, a missing table is not a pass."""
+    doc = {
+        "layer": "gold",
+        "great_expectations_version": "1.11.3",
+        "tables": {
+            "dim_date": {"status": "validated", "problem": None, "expectations": [
+                {"success": True}, {"success": True}, {"success": False}]},
+            "gold_exclusions": {"status": "missing", "problem": "required table not found",
+                                "expectations": []},
+        },
+    }  # fmt: skip
+    f = tmp_path / "gold-result.json"
+    f.write_text(json.dumps(doc))
+    out = quality.load_quality_json(f)
+    assert "great_expectations 1.11.3" in out["generated_by"]
+    by = {s["name"]: s for s in out["suites"]}
+    assert (by["gold.dim_date"]["evaluated"], by["gold.dim_date"]["passed"]) == (3, 2)
+    assert by["gold.dim_date"]["failed"] == 1
+    assert by["gold.gold_exclusions"]["status"] == "missing"
+    assert by["gold.gold_exclusions"]["evaluated"] == 0

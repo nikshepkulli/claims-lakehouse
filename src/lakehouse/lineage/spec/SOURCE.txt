@@ -1,0 +1,7 @@
+Vendored OpenLineage JSON Schemas (Apache License 2.0, see LICENSE in this directory).
+Copyright 2018-2026 contributors to the OpenLineage project. SPDX-License-Identifier: Apache-2.0.
+
+Source: https://github.com/OpenLineage/OpenLineage/tree/main/spec  (fetched 2026-11-06,
+main at dd64b09365f08ee02a3a0653ddda0e62d8cc76f2). Files are unmodified copies.
+Core event schema: https://openlineage.io/spec/2-0-2/OpenLineage.json
+Used only by lakehouse.lineage.validate (tests and the --validate flag); not needed at runtime.

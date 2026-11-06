@@ -85,6 +85,7 @@ pip install -r requirements-dbt.txt
 
 make dbt-data      # claimsgen --rows 5000 -> data/raw, then the gold TEST FIXTURE -> data/gold
 make dbt-build     # dbt deps + build (models and tests), file data/claims.duckdb
+                   # (flags go AFTER the subcommand: dbt-core 1.12 rejects them before it)
 make dbt-docs      # docs site in dbt/target/index.html (open it, or `dbt docs serve`)
 make dbt-lint      # sqlfluff for dbt/
 ```

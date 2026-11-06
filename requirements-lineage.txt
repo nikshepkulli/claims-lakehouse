@@ -1,0 +1,6 @@
+# Lineage (ticket #24): the package needs only PyYAML + pyarrow (already pinned by the
+# claimsgen/quality requirements). jsonschema validates events against the vendored OpenLineage
+# JSON Schemas in tests and behind `--validate`; `referencing` ships with it.
+-r requirements-claimsgen.txt
+PyYAML==6.0.3
+jsonschema==4.26.0

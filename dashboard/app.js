@@ -302,7 +302,7 @@
       });
       var top = pts.slice().sort(function (a, b) { return b.weighted_cost_index - a.weighted_cost_index; }).slice(0, 3);
       top.forEach(function (p, i) {
-        svg.appendChild(s("text", { class: "lbl", x: Math.min(x(p.claim_count) + 8, W - m.r - 4), y: y(p.weighted_cost_index) + (i ? 12 : 4), "text-anchor": x(p.claim_count) + 8 > W - m.r - 60 ? "end" : "start", text: p.provider_id }));
+        svg.appendChild(s("text", { class: "lbl", x: Math.min(x(p.claim_count) + 8, W - m.r - 4), y: y(p.weighted_cost_index) + (i ? 12 : 4), "text-anchor": x(p.claim_count) + 8 > W - m.r - 60 ? "end" : "start", text: p.provider_label }));
       });
       svg.appendChild(s("line", { class: "axis-line", x1: m.l, x2: W - m.r, y1: m.t + ih, y2: m.t + ih }));
       // nearest-point hit layer
@@ -497,7 +497,7 @@
     g3.appendChild(card("Cost index vs peers", "One dot per provider; orange dots are flagged.", [
       legend([{ name: "Within peer range", color: cssvar("series-1"), box: true }, { name: "Flagged", color: cssvar("series-2"), box: true }]),
       providerScatter(P),
-      dataTable("Flagged providers", [{ key: "provider_id", label: "Provider" }, { key: "specialty", label: "Specialty" }, { key: "cost_tier", label: "Tier" }, { key: "claim_count", label: "Claims", fmt: int }, { key: "weighted_cost_index", label: "Index", fmt: function (v) { return v.toFixed(2); } }], P.flagged)
+      dataTable("Flagged providers (chart labels show the last 6 characters of the token)", [{ key: "provider_label", label: "Chart label" }, { key: "provider_id", label: "Provider token" }, { key: "specialty", label: "Specialty" }, { key: "cost_tier", label: "Tier" }, { key: "claim_count", label: "Claims", fmt: int }, { key: "weighted_cost_index", label: "Index", fmt: function (v) { return v.toFixed(2); } }], P.flagged)
     ]));
     g3.appendChild(card("Specialty benchmark", "Allowed and paid per claim, with denial rate.", [
       dataTableOpen("Specialty benchmark", [{ key: "specialty", label: "Specialty" }, { key: "claim_count", label: "Claims", fmt: int }, { key: "allowed_per_claim", label: "Allowed/claim", fmt: money0 }, { key: "paid_per_claim", label: "Paid/claim", fmt: money0 }, { key: "denial_rate", label: "Denial", fmt: function (v) { return pct(v); } }], P.specialty_benchmark)
@@ -567,7 +567,7 @@
       var c = Q.raw_to_gold[0];
       tiles.push(["Claims quarantined or excluded", int(c.quarantined_or_excluded), statusEl("na", pct(c.quarantined_or_excluded / c.raw_distinct) + " of " + int(c.raw_distinct) + " distinct")]);
     }
-    tiles.push(["Quality framework (#22)", Q.quality_framework ? Q.quality_framework.suites.reduce(function (a, x) { return a + x.passed; }, 0) + " / " + Q.quality_framework.suites.reduce(function (a, x) { return a + x.evaluated; }, 0) : "n/a", Q.quality_framework ? statusEl(Q.quality_framework.suites.some(function (x) { return x.failed; }) ? "fail" : "pass", "expectations passed") : statusEl("na", "Not supplied")]);
+    tiles.push(["Quality framework (#22)", Q.quality_framework ? Q.quality_framework.suites.reduce(function (a, x) { return a + x.passed; }, 0) + " / " + Q.quality_framework.suites.reduce(function (a, x) { return a + x.evaluated; }, 0) : "n/a", Q.quality_framework ? statusEl(Q.quality_framework.suites.some(function (x) { return x.failed || x.status === "missing"; }) ? "fail" : "pass", "expectations passed") : statusEl("na", "Not supplied")]);
     root.appendChild(h("div", { class: "tiles" }, tiles.map(function (t) {
       return h("div", { class: "kpi tile" }, [h("div", { class: "l", text: t[0] }), h("div", { class: "v", text: t[1] }), h("div", { class: "n" }, [t[2]])]);
     })));
@@ -628,11 +628,13 @@
     // quality framework extension
     root.appendChild(h("h2", { id: "dq", text: "Data-quality framework results" }));
     if (Q.quality_framework) {
-      var qtbl = h("table", null, [h("caption", { text: "Expectation suites reported by " + Q.quality_framework.generated_by + "." }),
-        h("thead", null, [h("tr", null, ["Suite", "Layer", "Evaluated", "Passed", "Failed"].map(function (t, i) { return h("th", { scope: "col", class: i < 2 ? "l" : "", text: t }); }))]),
-        h("tbody", null, Q.quality_framework.suites.map(function (x) { return h("tr", null, [h("td", { class: "l", text: x.name }), h("td", { class: "l", text: x.layer }), h("td", { text: int(x.evaluated) }), h("td", { text: int(x.passed) }), h("td", { text: int(x.failed) })]); }))]);
+      var qs = Q.quality_framework.suites, qMissing = qs.filter(function (x) { return x.status === "missing"; });
+      var qtbl = h("table", null, [h("caption", { text: "Expectation suites reported by " + Q.quality_framework.generated_by + ". Run on this page's data source (" + D.meta.gold_source + ")." }),
+        h("thead", null, [h("tr", null, ["Suite", "Layer", "Evaluated", "Passed", "Failed", "Status"].map(function (t, i) { return h("th", { scope: "col", class: i < 2 || i === 5 ? "l" : "", text: t }); }))]),
+        h("tbody", null, qs.map(function (x) { return h("tr", null, [h("td", { class: "l", text: x.name }), h("td", { class: "l", text: x.layer }), h("td", { text: int(x.evaluated) }), h("td", { text: int(x.passed) }), h("td", { text: int(x.failed) }), h("td", { class: "l", text: x.status === "missing" ? "Table missing from this source: not evaluated" : x.failed ? "Failed" : "Passed" })]); }))]);
       root.appendChild(h("div", { class: "card" }, [h("div", { class: "tbl-wrap" }, [qtbl])]));
-    } else root.appendChild(h("p", { class: "ext", text: "Not supplied. The per-layer expectation suites are ticket #22. When that framework writes a summary JSON, pass it with --quality-json and its pass/fail counts appear here (format in docs/dashboard.md)." }));
+      if (qMissing.length) root.appendChild(h("p", { class: "ext", text: qMissing.length + " required table" + (qMissing.length > 1 ? "s were" : " was") + " absent from this source (" + qMissing.map(function (x) { return x.name; }).join(", ") + "), so the framework reported a blocking failure for them. The fixture is not the Spark gold output, which writes those tables." }));
+    } else root.appendChild(h("p", { class: "ext", text: "Not supplied. Run python -m lakehouse.quality run --layer gold and pass its gold-result.json with --quality-json; its pass/fail counts appear here (see docs/dashboard.md)." }));
 
     // methodology
     root.appendChild(h("h2", { id: "method", text: "How this page was built" }));
