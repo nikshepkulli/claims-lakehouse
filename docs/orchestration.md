@@ -27,7 +27,7 @@ flowchart LR
 | `bronze` | `python -m lakehouse.bronze --batch-date {{ ds }}` | `<root>/bronze` | 3 | 45 min | 1 h |
 | `silver` | `python -m lakehouse.silver --batch-date {{ ds }}` | `<root>/silver` | 3 | 45 min | 2 h |
 | `gold` | `python -m lakehouse.gold --batch-date {{ ds }}` | `<root>/gold` | 3 | 45 min | 3 h |
-| `dbt_build` | `dbt deps` + `dbt build --target duckdb` on `<gold>/export` | `<root>/dbt` | 3 | 30 min | 3.5 h |
+| `dbt_build` | skipped (exit 99) until gold has a `fact_claim` export, then `dbt deps` + `dbt build --target duckdb` on `<gold>/export` | `<root>/dbt` | 3 | 30 min | 3.5 h |
 | `quality_gates` | `python -m claims_dags.gates` | nothing | 0 | 10 min | 4 h |
 
 `<root>` is `$CLAIMS_DATA_ROOT` (default `data/airflow`). The task list, retries, timeouts, SLAs, pools
@@ -163,4 +163,22 @@ is not installed). The `pytest` job in `ci.yml` runs everything except the DagBa
 
 ## Verification status
 
-VERIFICATION_PLACEHOLDER
+Checked on 2026-11-06, synthetic data (2000 claims, seed 42), Airflow 2.10.5 on Python 3.12, Spark 3.5.9 +
+Delta 3.3.3 on Java 17, dbt-core 1.12.6 + dbt-duckdb 1.11.1 (the pinned CI versions).
+
+| Check | Where | Result |
+|---|---|---|
+| Unit and structural tests, DagBag import with a real Airflow install | CI workflow `airflow` and local | pass |
+| `airflow dags test claims_daily` for 2024-01-01, 01-02, 01-03 in order, every task for real (claimsgen, bronze, silver, gold on local Spark, `dbt build` with 186 of 187 nodes passing and 1 no-op, quality gates) | **native macOS run with three Python environments** (Airflow, Spark, dbt) put on `PATH`, not the Docker path | pass. 2024-01-01 carries only the dimension snapshot, so gold has no fact export yet and `dbt_build` and `quality_gates` are skipped by design; 01-02 and 01-03 run all six tasks |
+| Re-run of 2024-01-02 with `dags test` after it had succeeded | same | pass; gold export row counts identical (`fact_claim` 10, `fact_claim_line` 26, `dim_member` 1000) |
+| Retry with exponential backoff | same, with the Spark dependencies deliberately missing | `bronze` went `up_for_retry` with growing gaps (about 4 and 7 minutes); the run was killed before the retries ran out |
+| Failure callback and webhook payload | unit tests only | the callback was **not** seen firing in a real failed run |
+| `make airflow-up` / `airflow-test` / `airflow-backfill` (the Docker path) | **not verified**. The Docker daemon went read-only because the host disk filled up during the session; the compose file and entrypoint were written and one run reached the install step, which exposed a `PYTHONPATH` bug that is fixed (and tested), but no later run completed | untested |
+| `airflow dags backfill` | attempted natively on macOS; the forked task runner spun at 100% CPU on the first task and never finished, and a second attempt hit a "deadlock" from the state that kill left behind | **not verified**. The command and flags in the runbook come from the Airflow 2.10 CLI, not from a successful run here. Idempotent re-runs were shown with `dags test` instead |
+| The scheduler, the UI, pools enforcement, SLA misses, `sla_miss_callback` | not run | untested |
+| MWAA, Astronomer, any cloud | not used | none |
+
+Bugs the real run found and that are fixed: the dbt task failed because DuckDB does not create the parent
+directory of its file (now `mkdir -p`), dbt errored on the dimension-only first date (now skipped by exit
+code 99), and tasks replaced the container's `PYTHONPATH` instead of extending it.
+

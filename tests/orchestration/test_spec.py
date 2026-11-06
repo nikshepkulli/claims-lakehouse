@@ -102,6 +102,11 @@ def test_dbt_and_gates_stay_inside_the_data_root():
     dbt = TASKS["dbt_build"]
     assert all(p.startswith(str(CFG.root)) for p in dbt.writes)
     assert dbt.env["DBT_DUCKDB_PATH"].startswith(str(CFG.root))
+    # duckdb will not create the parent directory of its file
+    assert f"mkdir -p {CFG.root}/dbt" in dbt.command
+    # no claims batch yet (first date is dimensions only): skip, do not fail
+    assert f"{CFG.layer_roots()['gold']}/export/fact_claim" in dbt.command
+    assert "exit 99" in dbt.command
     assert dbt.env["GOLD_PATH"] == f"{CFG.layer_roots()['gold']}/export"
     _, flags = parse_cli(TASKS["quality_gates"].command)
     assert not [f for f in flags if CLI_FLAGS["claims_dags.gates"].get(f, ("", ""))[0] == "write"]
@@ -124,3 +129,8 @@ def test_config_from_env():
 def test_parse_cli_ignores_guards():
     mod, flags = parse_cli("test -d /x || PYTHONPATH=src python -m claimsgen --out /x --quiet")
     assert mod == "claimsgen" and flags == {"--out": "/x"}
+
+
+def test_python_tasks_extend_rather_than_replace_pythonpath():
+    for tid in ("land_raw", "bronze", "silver", "gold", "quality_gates"):
+        assert "${PYTHONPATH:+:$PYTHONPATH}" in TASKS[tid].command, tid

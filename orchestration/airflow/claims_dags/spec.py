@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
+SKIP_EXIT = 99  # BashOperator default skip_on_exit_code
 DS = "{{ ds }}"  # Airflow logical date, YYYY-MM-DD
 SPARK_POOL = "claims_spark"
 DATASETS = "claims,claim_lines,diagnoses,members,providers"  # what gold reads (as in CI e2e)
@@ -101,7 +102,8 @@ class TaskSpec:
 
 def _py(module: str, *args: str) -> str:
     path = "src:orchestration/airflow" if module.startswith("claims_dags") else "src"
-    return f"PYTHONPATH={path} python -m {module} " + " ".join(args)
+    # keep any PYTHONPATH from the environment (the local container puts its deps there)
+    return f"PYTHONPATH={path}${{PYTHONPATH:+:$PYTHONPATH}} python -m {module} " + " ".join(args)
 
 
 def build_daily_pipeline(cfg: PipelineConfig | None = None) -> list[TaskSpec]:
@@ -185,7 +187,12 @@ def build_daily_pipeline(cfg: PipelineConfig | None = None) -> list[TaskSpec]:
             "dbt_build",
             "dbt",
             # same invocation as `make gold-dbt`: dbt on DuckDB reading the real gold export
-            f"test -f dbt/profiles.yml || cp dbt/profiles.yml.example dbt/profiles.yml; "
+            # gold writes no fact export until a claims batch exists (first date = dimensions
+            # only); exit 99 makes BashOperator mark the task, and its downstream, "skipped"
+            f"{{ test -d {q(gold_export + '/fact_claim')} || "
+            f"{{ echo 'no claims in gold yet: skipping dbt'; exit {SKIP_EXIT}; }}; }} && "
+            f"mkdir -p {q(str(cfg.root / 'dbt'))} && "
+            f"{{ test -f dbt/profiles.yml || cp dbt/profiles.yml.example dbt/profiles.yml; }} && "
             f"{cfg.dbt_bin} deps --project-dir dbt --profiles-dir dbt && "
             f"{cfg.dbt_bin} build --project-dir dbt --profiles-dir dbt --target duckdb",
             ("gold",),
