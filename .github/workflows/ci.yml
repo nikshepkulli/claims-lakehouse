@@ -41,15 +41,24 @@ jobs:
       - run: make -f mk/quality.mk test
 
   spark-tests:
-    # One job per layer, in parallel, so total wall time stays that of the slowest suite.
-    # The bronze leg keeps the old check name "spark tests (bronze)".
+    # Legs run in parallel, so wall time is that of the slowest one (Spark on tiny data is
+    # dominated by per-job overhead, so silver is split in two). The bronze leg keeps the old
+    # check name "spark tests (bronze)".
     name: spark tests (${{ matrix.suite }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        suite: [bronze, silver, streaming]
+        include:
+          - suite: bronze
+            path: tests/bronze
+          - suite: silver-e2e
+            path: tests/silver/test_silver_e2e.py
+          - suite: silver-rules
+            path: tests/silver/test_silver_rules.py
+          - suite: streaming
+            path: tests/streaming
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -62,7 +71,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-spark.txt
       - run: pip install -r requirements-spark.txt
-      - run: pytest -m spark -p no:cacheprovider tests/${{ matrix.suite }}
+      - run: pytest -m spark -p no:cacheprovider ${{ matrix.path }}
 
   sqlfluff:
     name: sqlfluff
