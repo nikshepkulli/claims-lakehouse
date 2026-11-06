@@ -1,0 +1,6 @@
+# Dashboard queries run on DuckDB and read only from the marts schema (same rules as analytics/).
+# Plain SQL, no Jinja: the repo-root .sqlfluff (sparksql, raw templater) would otherwise apply.
+# Inherits max_line_length, exclude_rules and keyword capitalisation from the root file.
+[sqlfluff]
+dialect = duckdb
+templater = raw
