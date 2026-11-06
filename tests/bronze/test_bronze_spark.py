@@ -246,6 +246,59 @@ def test_unreadable_files_and_bad_lines_are_quarantined(days, spark, raw, bronze
     )
 
 
+def _corrupt_first_data_page(path: Path) -> int:
+    """Overwrite bytes inside the first column chunk; magic number and footer stay intact."""
+    meta = pq.read_metadata(path)
+    col = meta.row_group(0).column(0)
+    start = col.data_page_offset
+    size = col.total_compressed_size
+    blob = bytearray(path.read_bytes())
+    mid = start + size // 2
+    blob[mid : mid + max(16, size // 4)] = b"\xff" * max(16, size // 4)
+    path.write_bytes(bytes(blob))
+    assert pq.read_metadata(path).num_rows == meta.num_rows  # footer still valid
+    with pytest.raises(Exception):  # noqa: B017 - the page really is undecodable
+        pq.read_table(path)
+    return meta.num_rows
+
+
+def test_page_corrupt_parquet_file_is_quarantined_and_batch_lands(
+    days, spark, raw, bronze, tmp_path
+):
+    day = days[0]
+    inp = tmp_path / "in"
+    cdir = inp / "claims" / f"ingest_date={day}"
+    shutil.copytree(raw / "claims" / f"ingest_date={day}", cdir)
+    good_rows = src_rows(raw, "claims", day)
+    bad = cdir / "part-00099.parquet"
+    shutil.copy(next(cdir.glob("part-*.parquet")), bad)
+    bad_rows = _corrupt_first_data_page(bad)
+
+    r = ingest_batch(spark, inp, bronze, day, ["claims"])[0]
+    assert r.files_quarantined == 1 and r.rows_written == good_rows
+    assert r.quarantined_file_rows == bad_rows  # footer row count of the dropped file
+    claims = table(spark, bronze, "claims")
+    assert claims.count() == good_rows
+    assert claims.where("_source_file LIKE '%part-00099%'").count() == 0
+    q = table(spark, bronze, "_meta/quarantine").collect()
+    assert len(q) == 1
+    assert q[0]["source_file"].endswith("part-00099.parquet") and q[0]["payload"] is None
+    assert q[0]["reason"].startswith("CORRUPT_DATA_PAGE:") and f"{bad_rows} rows" in q[0]["reason"]
+    log = table(spark, bronze, "_meta/schema_log").first()
+    assert log["files_quarantined"] == 1 and log["rows_written"] == good_rows
+
+    # re-running the batch is idempotent
+    r2 = ingest_batch(spark, inp, bronze, day, ["claims"])[0]
+    assert r2.rows_written == good_rows and r2.files_quarantined == 1
+    assert table(spark, bronze, "claims").count() == good_rows
+    assert table(spark, bronze, "_meta/quarantine").count() == 1
+
+    # once the file is removed (fixed upstream) the same batch lands clean and clears quarantine
+    bad.unlink()
+    r3 = ingest_batch(spark, inp, bronze, day, ["claims"])[0]
+    assert r3.files_quarantined == 0 and table(spark, bronze, "_meta/quarantine").count() == 0
+
+
 def test_csv_only_partition_lands_as_strings_and_type_conflicts_quarantine(
     days, spark, raw, bronze, tmp_path
 ):

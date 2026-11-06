@@ -69,6 +69,9 @@ class DatasetResult:
     files_read: int = 0
     files_quarantined: int = 0
     rows_quarantined: int = 0
+    # Footer-declared rows of Parquet files quarantined for CORRUPT_DATA_PAGE. Those rows are never
+    # decoded, so they are not in rows_quarantined (which counts quarantine *records*).
+    quarantined_file_rows: int = 0
     rows_written: int = 0
     columns_added: list[str] = field(default_factory=list)
     skipped: bool = False  # no input files for this batch
@@ -86,6 +89,45 @@ def _read_file(spark: SparkSession, f: SourceFile) -> DataFrame:
         # CSV carries no types: land everything as string (bronze does not interpret).
         return spark.read.option("header", True).option("inferSchema", False).csv(f.abs)
     raise ValueError(f"unsupported structured format {f.fmt}")
+
+
+CORRUPT_DATA_PAGE = "CORRUPT_DATA_PAGE"
+
+
+def _decode_probe(spark: SparkSession, f: SourceFile) -> None:
+    """Decode every column of every page of one Parquet file (raises if a page is corrupt).
+
+    The ``noop`` sink consumes all columns without pruning, so nothing is skipped; nothing is
+    written. Runs as a Spark job, so it works for any URI scheme the bronze reader supports.
+    """
+    spark.read.parquet(f.abs).write.format("noop").mode("overwrite").save()
+
+
+def _footer_rows(spark: SparkSession, f: SourceFile) -> int | None:
+    """Row count declared by the footer (no page decode, so it still works on a corrupt page)."""
+    try:
+        return spark.read.parquet(f.abs).count()
+    except Exception:  # noqa: BLE001 - best effort, only used for reconciliation text
+        return None
+
+
+def _find_corrupt_page_files(
+    spark: SparkSession, frames: list[tuple[SourceFile, DataFrame]]
+) -> dict[str, tuple[SourceFile, str, int | None]]:
+    """Slow path, run only after a batch write failed: probe each Parquet file on its own.
+
+    Returns ``{rel: (file, error summary, footer row count)}`` for files whose pages cannot be
+    decoded. Empty when no file is at fault (the original failure is then re-raised).
+    """
+    bad: dict[str, tuple[SourceFile, str, int | None]] = {}
+    for f, _ in frames:
+        if f.fmt != "parquet":
+            continue
+        try:
+            _decode_probe(spark, f)
+        except Exception as e:  # noqa: BLE001
+            bad[f.rel] = (f, _error_summary(e), _footer_rows(spark, f))
+    return bad
 
 
 def _error_summary(e: Exception) -> str:
@@ -199,7 +241,7 @@ def ingest_dataset(
             if f.name not in META_COLS
         }
 
-    good: list[DataFrame] = []
+    good: list[tuple[SourceFile, DataFrame]] = []
     quarantine_rows: list[tuple] = []
     quarantine_frames: list[DataFrame] = []
     for f in files:
@@ -235,30 +277,75 @@ def ingest_dataset(
             continue
         for c in df.schema:
             accepted.setdefault(c.name, c.dataType)
-        good.append(df.withColumn("_source_file", F.lit(f.rel)))
+        good.append((f, df.withColumn("_source_file", F.lit(f.rel))))
         res.files_read += 1
 
-    # Quarantine (idempotent per batch+dataset, even when empty so a clean re-run clears old rows).
-    q_df = spark.createDataFrame(quarantine_rows, QUARANTINE_SCHEMA)
-    for qf in quarantine_frames:
-        q_df = q_df.unionByName(qf)
+    q_uri = table_uri(bronze_root, QUARANTINE)
     q_pred = f"dataset = '{ds.name}' AND _batch_id = '{batch_id}'"
-    _write_replace(q_df, table_uri(bronze_root, QUARANTINE), q_pred, ["_ingest_date"])
-    res.rows_quarantined = (
-        spark.read.format("delta").load(table_uri(bronze_root, QUARANTINE)).where(q_pred).count()
-    )
 
+    def write_quarantine() -> None:
+        # idempotent per batch+dataset, even when empty so a clean re-run clears old rows
+        q_df = spark.createDataFrame(quarantine_rows, QUARANTINE_SCHEMA)
+        for qf in quarantine_frames:
+            q_df = q_df.unionByName(qf)
+        _write_replace(q_df, q_uri, q_pred, ["_ingest_date"])
+        res.rows_quarantined = spark.read.format("delta").load(q_uri).where(q_pred).count()
+
+    write_quarantine()
     if not good:
         log.warning("bronze %s %s: no readable files; table untouched", ds.name, batch_id)
         return res
 
-    data = reduce(lambda a, b: a.unionByName(b, allowMissingColumns=True), good)
-    observed = [c.name for c in data.schema if c.name != "_source_file"]
-    observed_schema = T.StructType([c for c in data.schema if c.name != "_source_file"])
+    pred = f"_ingest_date = DATE'{batch_date.isoformat()}' AND _batch_id = '{batch_id}'"
+    probed = False
+    while True:
+        data = reduce(lambda a, b: a.unionByName(b, allowMissingColumns=True), [d for _, d in good])
+        observed = [c.name for c in data.schema if c.name != "_source_file"]
+        observed_schema = T.StructType([c for c in data.schema if c.name != "_source_file"])
 
-    baseline = _baseline_columns(spark, bronze_root, ds.name, batch_date)
-    added = sorted(set(observed) - baseline) if baseline is not None else []
-    res.columns_added = added
+        baseline = _baseline_columns(spark, bronze_root, ds.name, batch_date)
+        added = sorted(set(observed) - baseline) if baseline is not None else []
+        res.columns_added = added
+
+        out = (
+            data.withColumn("_ingest_ts", F.lit(ingest_ts).cast("timestamp"))
+            .withColumn("_batch_id", F.lit(batch_id))
+            .withColumn("_ingest_date", F.lit(batch_date).cast("date"))
+        )
+        meta_last = [c for c in out.columns if c not in META_COLS]
+        out = out.select(*meta_last, *META_COLS)
+        try:
+            _write_replace(out, uri, pred, ["_ingest_date"])
+            break
+        except Exception:
+            # The footer check above cannot see a file that is corrupt only inside a data page; it
+            # surfaces here, at decode time, and a Delta overwrite commits nothing when it fails.
+            # Optimistic path costs nothing; only on failure probe each file once (issue #55).
+            if probed:
+                raise
+            probed = True
+            bad = _find_corrupt_page_files(spark, good)
+            if not bad:
+                raise  # not a page problem (permissions, schema merge, ...): do not mask it
+            for rel, (_, err, nrows) in bad.items():
+                declared = f"{nrows} rows" if nrows is not None else "unknown row count"
+                reason = (
+                    f"{CORRUPT_DATA_PAGE}: footer readable ({declared} declared) but a data page "
+                    f"cannot be decoded: {err}"
+                )
+                log.warning("bronze %s: quarantining %s (%s)", ds.name, rel, reason)
+                quarantine_rows.append(
+                    _quarantine_row(batch_id, ds.name, rel, reason, ingest_ts, batch_date)
+                )
+                res.files_quarantined += 1
+                res.files_read -= 1
+                res.quarantined_file_rows += nrows or 0
+            good = [(f, d) for f, d in good if f.rel not in bad]
+            write_quarantine()
+            if not good:
+                log.warning("bronze %s %s: no readable files; table untouched", ds.name, batch_id)
+                return res
+
     if added:
         log.warning(
             "SCHEMA_DRIFT dataset=%s batch=%s new_columns=%s (merged into the bronze schema)",
@@ -266,16 +353,6 @@ def ingest_dataset(
             batch_id,
             added,
         )
-
-    out = (
-        data.withColumn("_ingest_ts", F.lit(ingest_ts).cast("timestamp"))
-        .withColumn("_batch_id", F.lit(batch_id))
-        .withColumn("_ingest_date", F.lit(batch_date).cast("date"))
-    )
-    meta_last = [c for c in out.columns if c not in META_COLS]
-    out = out.select(*meta_last, *META_COLS)
-    pred = f"_ingest_date = DATE'{batch_date.isoformat()}' AND _batch_id = '{batch_id}'"
-    _write_replace(out, uri, pred, ["_ingest_date"])
     res.rows_written = spark.read.format("delta").load(uri).where(pred).count()
 
     log_row = [
