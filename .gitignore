@@ -16,3 +16,9 @@ dbt_packages/
 dbt/profiles.yml
 dbt/logs/
 dbt/.user.yml
+
+# Databricks bundle build output and CLI cache
+dist/
+build/
+*.egg-info/
+.databricks/
