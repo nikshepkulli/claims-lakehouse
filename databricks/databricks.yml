@@ -153,6 +153,12 @@ targets:
                 node_type_id: ${var.node_type_id}
                 num_workers: 2
                 data_security_mode: SINGLE_USER
+                # Gold tokenises member/provider ids with a keyed HMAC (ticket #71) and refuses to
+                # run without LAKEHOUSE_PSEUDONYM_KEY. This is a Databricks SECRET REFERENCE (scope
+                # `lakehouse`, key `pseudonym_key`, created by you), never a key. Not run on Databricks.
+                spark_env_vars:
+                  LAKEHOUSE_PSEUDONYM_KEY: "{{secrets/lakehouse/pseudonym_key}}"
+                  LAKEHOUSE_PSEUDONYM_KEY_ID: v1
           schedule:
             quartz_cron_expression: 0 0 2 * * ?
             timezone_id: UTC
