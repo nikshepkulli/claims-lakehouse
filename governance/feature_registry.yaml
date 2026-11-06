@@ -1,0 +1,514 @@
+# Feature registry for ticket #26. Generated once from the feature spec, now hand-maintained.
+version: 1
+feature_set: claim_denial_v1
+description: Feature registry (#26). Every column of the three feature tables is listed here; tests/features/test_registry.py fails on drift in either direction. classification/identifier/handling use the vocabulary of governance/data_classification.yaml. NO feature is PHI_LIKE or a direct identifier.
+entities:
+  member:
+    table: member_features
+    key: [member_id, as_of]
+    as_of: first of month (grid)
+  provider:
+    table: provider_features
+    key: [provider_id, as_of]
+    as_of: first of month (grid)
+  claim:
+    table: claim_features
+    key: [claim_id, as_of]
+    as_of: start of the claim's receipt day (scoring moment); also carries m_<member feature> and p_<provider feature> columns computed at that as_of
+    prefixes: {member: m_, provider: p_}
+key_columns:
+  member_id: {classification: PHI_LIKE, identifier: direct, handling: hash, note: 'Join key only, never a model input. Hashed/tokenised in analyst views per governance/data_classification.yaml (dim_member.member_id).'}
+  provider_id: {classification: CONFIDENTIAL, identifier: direct, handling: hash, note: Join key only (dim_provider.provider_id).}
+  claim_id: {classification: CONFIDENTIAL, identifier: quasi, handling: none, note: Join key only (fact_claim.claim_id).}
+  as_of: {classification: INTERNAL, identifier: none, handling: none, note: 'Member/provider tables: first of month. Claim table: equals the receipt date (fact_claim.received_date_key is PHI_LIKE quasi), so the claim table inherits that handling; drop as_of before training.'}
+label:
+  name: is_denied
+  table: labels/claim_denial
+  entity: claim
+  source_columns: [fact_claim.claim_status]
+  classification: INTERNAL
+  description: Claim was denied. Stored separately from every feature table; joined only by features.training_set().
+features:
+- name: claims_30d
+  entity: member
+  dtype: int
+  window: 30d
+  description: Claims received by the member in the 30 days up to as_of
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.member_sk]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: claims_90d
+  entity: member
+  dtype: int
+  window: 90d
+  description: Claims received by the member in the 90 days up to as_of
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.member_sk]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: claims_365d
+  entity: member
+  dtype: int
+  window: 365d
+  description: Claims received by the member in the 365 days up to as_of
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.member_sk]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: billed_sum_90d
+  entity: member
+  dtype: decimal(18,2)
+  window: 90d
+  description: Sum of billed amounts of claims received in the trailing 90 days
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.total_billed_amount]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: billed_sum_365d
+  entity: member
+  dtype: decimal(18,2)
+  window: 365d
+  description: Sum of billed amounts of claims received in the trailing 365 days
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.total_billed_amount]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: paid_sum_365d
+  entity: member
+  dtype: decimal(18,2)
+  window: 365d
+  description: Sum of paid amounts over trailing-365d claims whose outcome is known at as_of (received + outcome_lag_days <= as_of)
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.total_paid_amount, fact_claim.claim_status]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: true
+  nullable: false
+- name: denied_count_365d
+  entity: member
+  dtype: int
+  window: 365d
+  description: Denied claims among trailing-365d claims whose outcome is known at as_of
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.claim_status]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: true
+  nullable: false
+- name: denial_rate_365d
+  entity: member
+  dtype: double
+  window: 365d
+  description: Denied / adjudicated claims among trailing-365d claims with a known outcome; NULL when none
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.claim_status]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: true
+  nullable: true
+- name: distinct_providers_365d
+  entity: member
+  dtype: int
+  window: 365d
+  description: Distinct providers seen in trailing-365d claims
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.provider_sk]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: days_since_last_claim
+  entity: member
+  dtype: int
+  window: all history
+  description: Whole days from the latest received claim to as_of; NULL when the member has no claim yet. A relative interval, not a calendar date.
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key]
+  transform: difference
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true
+- name: has_diabetes
+  entity: member
+  dtype: boolean
+  window: all history
+  description: Any claim received by as_of has a primary diagnosis in ICD-10 E10-E14
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code, fact_claim.primary_diagnosis_sk]
+  transform: flag
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: has_hypertension
+  entity: member
+  dtype: boolean
+  window: all history
+  description: Any claim received by as_of has a primary diagnosis in I10-I16
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code, fact_claim.primary_diagnosis_sk]
+  transform: flag
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: has_coronary_artery_disease
+  entity: member
+  dtype: boolean
+  window: all history
+  description: Any claim received by as_of has a primary diagnosis in I20-I25
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code, fact_claim.primary_diagnosis_sk]
+  transform: flag
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: has_heart_failure
+  entity: member
+  dtype: boolean
+  window: all history
+  description: Any claim received by as_of has a primary diagnosis in I50
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code, fact_claim.primary_diagnosis_sk]
+  transform: flag
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: has_copd
+  entity: member
+  dtype: boolean
+  window: all history
+  description: Any claim received by as_of has a primary diagnosis in J40-J44
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code, fact_claim.primary_diagnosis_sk]
+  transform: flag
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: has_asthma
+  entity: member
+  dtype: boolean
+  window: all history
+  description: Any claim received by as_of has a primary diagnosis in J45-J46
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code, fact_claim.primary_diagnosis_sk]
+  transform: flag
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: has_ckd
+  entity: member
+  dtype: boolean
+  window: all history
+  description: Any claim received by as_of has a primary diagnosis in N18
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code, fact_claim.primary_diagnosis_sk]
+  transform: flag
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: has_depression
+  entity: member
+  dtype: boolean
+  window: all history
+  description: Any claim received by as_of has a primary diagnosis in F32-F33
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code, fact_claim.primary_diagnosis_sk]
+  transform: flag
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: chronic_condition_count
+  entity: member
+  dtype: int
+  window: all history
+  description: Number of has_* chronic-condition flags set
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, dim_diagnosis.icd10_code]
+  transform: aggregate
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: plan_type
+  entity: member
+  dtype: string
+  window: as-of
+  description: Plan type of the dim_member version valid at as_of (SCD2 as-of join)
+  owner: nikshepkulli
+  source_columns: [dim_member.plan_type, dim_member.effective_from, dim_member.effective_to]
+  transform: lookup
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true
+- name: state
+  entity: member
+  dtype: string
+  window: as-of
+  description: Member state of the dim_member version valid at as_of
+  owner: nikshepkulli
+  source_columns: [dim_member.state, dim_member.effective_from, dim_member.effective_to]
+  transform: lookup
+  classification: CONFIDENTIAL
+  identifier: quasi
+  handling: none
+  outcome_dependent: false
+  nullable: true
+  justification: State-level geography is the coarsest HIPAA Safe Harbor unit (same basis as dim_member.state in the classification registry)
+- name: age_band
+  entity: member
+  dtype: string
+  window: as-of
+  description: 5-year age band (90+ top-coded) at as_of from birth_year; the raw birth_year never enters the store
+  owner: nikshepkulli
+  source_columns: [dim_member.birth_year, dim_member.effective_from, dim_member.effective_to]
+  transform: generalise
+  classification: CONFIDENTIAL
+  identifier: quasi
+  handling: generalise
+  outcome_dependent: false
+  nullable: true
+  justification: Generalised with lakehouse.governance.generalise.age_band; birth_year is PHI_LIKE and is not exposed
+- name: claims_90d
+  entity: provider
+  dtype: int
+  window: 90d
+  description: Claims received by the provider in the trailing 90 days
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.provider_sk]
+  transform: aggregate
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: claims_365d
+  entity: provider
+  dtype: int
+  window: 365d
+  description: Claims received by the provider in the trailing 365 days
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.provider_sk]
+  transform: aggregate
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: distinct_members_365d
+  entity: provider
+  dtype: int
+  window: 365d
+  description: Distinct members in trailing-365d claims (aggregate count, no member ids exposed)
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.member_sk]
+  transform: aggregate
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: denial_rate_365d
+  entity: provider
+  dtype: double
+  window: 365d
+  description: Denied / adjudicated trailing-365d claims with a known outcome; NULL when none
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.claim_status]
+  transform: aggregate
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: true
+  nullable: true
+- name: avg_billed_365d
+  entity: provider
+  dtype: double
+  window: 365d
+  description: Mean billed amount per claim over 365d (computed on integer cents, rounded half up)
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.total_billed_amount]
+  transform: aggregate
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true
+- name: cost_z_365d
+  entity: provider
+  dtype: double
+  window: 365d
+  description: 'Peer-normalised cost: z-score of the provider''s mean billed per claim vs providers of the same as-of specialty (>= min_peer_claims claims, >= min_peers peers); NULL otherwise'
+  owner: nikshepkulli
+  source_columns: [fact_claim.received_date_key, fact_claim.total_billed_amount, dim_provider.specialty]
+  transform: aggregate
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true
+- name: specialty
+  entity: provider
+  dtype: string
+  window: as-of
+  description: Specialty of the dim_provider version valid at as_of
+  owner: nikshepkulli
+  source_columns: [dim_provider.specialty, dim_provider.effective_from, dim_provider.effective_to]
+  transform: lookup
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true
+- name: network_status
+  entity: provider
+  dtype: string
+  window: as-of
+  description: Network status valid at as_of
+  owner: nikshepkulli
+  source_columns: [dim_provider.network_status, dim_provider.effective_from, dim_provider.effective_to]
+  transform: lookup
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true
+- name: cost_tier
+  entity: provider
+  dtype: string
+  window: as-of
+  description: Cost tier valid at as_of
+  owner: nikshepkulli
+  source_columns: [dim_provider.cost_tier, dim_provider.effective_from, dim_provider.effective_to]
+  transform: lookup
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true
+- name: billed_amount
+  entity: claim
+  dtype: decimal(12,2)
+  window: claim
+  description: Billed amount of the claim being scored (known at receipt)
+  owner: nikshepkulli
+  source_columns: [fact_claim.total_billed_amount]
+  transform: passthrough
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: line_count
+  entity: claim
+  dtype: smallint
+  window: claim
+  description: Number of service lines on the claim
+  owner: nikshepkulli
+  source_columns: [fact_claim.line_count]
+  transform: passthrough
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: claim_type
+  entity: claim
+  dtype: string
+  window: claim
+  description: Claim type
+  owner: nikshepkulli
+  source_columns: [fact_claim.claim_type]
+  transform: passthrough
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: place_of_service
+  entity: claim
+  dtype: string
+  window: claim
+  description: Place-of-service code
+  owner: nikshepkulli
+  source_columns: [fact_claim.place_of_service]
+  transform: passthrough
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true
+- name: service_to_received_lag_days
+  entity: claim
+  dtype: int
+  window: claim
+  description: Days between date of service and receipt (difference of two dates, no calendar date exposed)
+  owner: nikshepkulli
+  source_columns: [fact_claim.service_date_key, fact_claim.received_date_key]
+  transform: difference
+  classification: INTERNAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: false
+- name: primary_dx_chapter
+  entity: claim
+  dtype: string
+  window: claim
+  description: Leading letter of the primary ICD-10 code (chapter group)
+  owner: nikshepkulli
+  source_columns: [dim_diagnosis.icd10_code]
+  transform: generalise
+  classification: CONFIDENTIAL
+  identifier: none
+  handling: none
+  outcome_dependent: false
+  nullable: true

@@ -1,0 +1,35 @@
+# Observability thresholds and alert routing (ticket #23). See docs/observability.md.
+# No secrets here: the webhook URL is read from the env var named by sinks.webhook.url_env.
+ledger_root: data/ops
+
+# Tables that MUST have a successful run; a missing one is a critical freshness alert.
+expected_tables: [bronze, silver, gold]
+
+defaults:
+  freshness:
+    warn_after_hours: 26 # daily batch + 2 h grace
+    critical_after_hours: 50 # one missed daily run
+  volume:
+    window: 14 # trailing successful runs compared against
+    min_history: 5 # fewer than this -> no volume verdict (avoids noise on young tables)
+    z_warn: 3.0
+    z_crit: 4.5
+    pct_warn: 30
+    pct_crit: 60
+
+# Per-table overrides (inherit defaults). Names are ledger table_name values.
+tables:
+  streaming:
+    freshness: { warn_after_hours: 0.5, critical_after_hours: 2 }
+    volume: { pct_warn: 50, pct_crit: 80 }
+  fact_claim_line:
+    volume: { pct_warn: 20, pct_crit: 40 }
+
+sinks:
+  log: { enabled: true }
+  file: { enabled: true, path: data/ops/alerts.jsonl }
+  webhook: # generic JSON POST; disabled by default
+    enabled: false
+    url_env: LAKEHOUSE_ALERT_WEBHOOK_URL
+    timeout_s: 5
+    min_severity: warning
