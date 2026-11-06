@@ -62,16 +62,45 @@ def test_raw_values_only_for_the_transformer_role(sql90):
 
 def test_policies_cover_every_handling_the_registry_uses(sql90):
     reg = registry.load()
-    used = {c.handling for t in reg.values() for c in t.columns.values()} - {"none"}
+    # token = stored value is already a keyed pseudonym: no policy, no tag (see test below)
+    used = {c.handling for t in reg.values() for c in t.columns.values()} - {"none", "token"}
     pol = policies(sql90)
     body = {
-        "hash": "= 'HASH' THEN SHA2(val, 256)",
         "mask": "= 'MASK' THEN",
         "generalise": "= 'GENERALISE' THEN",
     }
     for h in used - {"drop"}:  # drop = no matching WHEN, falls through to NULL
         assert any(body[h] in e for e in pol.values()), h
     assert "drop" in used  # record_hash: exercised through the fall-through branch
+
+
+def test_no_unkeyed_hash_of_an_identifier_anywhere_in_snowflake_code():
+    """Ticket #71: SHA2()/MD5() of sequential ids is reversible, so neither the policies nor
+    the Terraform mirror may hash. (HASH() in the MERGE scripts is row change detection only.)"""
+    for path in [*SQL.glob("*.sql"), TF]:
+        text = strip(path.read_text()) if path.suffix == ".sql" else path.read_text()
+        assert not re.search(r"\b(SHA2|SHA1|MD5)\s*\(", text, re.I), path.name
+    assert "'HASH'" not in (SQL / "90_masking_policies.sql").read_text()
+    assert "HASH" not in re.search(r"ordered_allowed_values = (\[.*?\])", TF.read_text()).group(1)
+
+
+def test_token_columns_are_not_tagged_for_masking():
+    """A `token` column keeps its keyed value for every role; tagging it PRIVACY_HANDLING would
+    send it into the fail-closed branch of the policy and break joins."""
+    reg = registry.load()
+    scripts = (SQL / "91_apply_tags_gold.sql").read_text() + (
+        SQL / "92_apply_tags_marts.sql"
+    ).read_text()
+    for t in reg.values():
+        for c in t.columns.values():
+            if c.handling == "token":
+                assert (
+                    f"{t.name} MODIFY COLUMN {c.name} SET TAG secure.privacy_handling"
+                    not in scripts
+                )
+                assert (
+                    f"{t.name} MODIFY COLUMN {c.name} SET TAG secure.data_classification" in scripts
+                )
 
 
 def test_sql_scripts_never_grant_and_never_leak_secrets(sql90):
@@ -100,7 +129,6 @@ def test_every_tag_statement_targets_a_real_ddl_column():
             "INTERNAL",
             "CONFIDENTIAL",
             "PHI_LIKE",
-            "HASH",
             "MASK",
             "GENERALISE",
             "DROP",
@@ -110,7 +138,8 @@ def test_every_tag_statement_targets_a_real_ddl_column():
     assert tagged == {(t, c) for t, cols in ddl.items() for c in cols}
 
 
-def test_member_and_provider_ids_are_tagged_hash_in_gold_and_marts():
+def test_member_and_provider_ids_are_classified_but_not_masked_in_gold_and_marts():
+    """They are keyed tokens at rest (#71): classified for audit, nothing for a policy to do."""
     gold = (SQL / "91_apply_tags_gold.sql").read_text()
     marts = (SQL / "92_apply_tags_marts.sql").read_text()
     for text, table, col in [
@@ -119,9 +148,9 @@ def test_member_and_provider_ids_are_tagged_hash_in_gold_and_marts():
         (marts, "mart_member_risk", "member_id"),
         (marts, "mart_provider_performance", "provider_id"),
     ]:
+        assert f"ALTER TABLE {table} MODIFY COLUMN {col} SET TAG secure.data_classification" in text
         assert (
-            f"ALTER TABLE {table} MODIFY COLUMN {col} SET TAG secure.privacy_handling = 'HASH';"
-            in text
+            f"ALTER TABLE {table} MODIFY COLUMN {col} SET TAG secure.privacy_handling" not in text
         )
 
 

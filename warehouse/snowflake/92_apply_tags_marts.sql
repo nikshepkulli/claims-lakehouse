@@ -30,7 +30,6 @@ ALTER TABLE mart_claims_monthly MODIFY COLUMN avg_allowed_per_line SET TAG secur
 
 -- mart_provider_performance
 ALTER TABLE mart_provider_performance MODIFY COLUMN provider_id SET TAG secure.data_classification = 'CONFIDENTIAL';
-ALTER TABLE mart_provider_performance MODIFY COLUMN provider_id SET TAG secure.privacy_handling = 'HASH';
 ALTER TABLE mart_provider_performance MODIFY COLUMN service_month SET TAG secure.data_classification = 'INTERNAL';
 ALTER TABLE mart_provider_performance MODIFY COLUMN specialty SET TAG secure.data_classification = 'INTERNAL';
 ALTER TABLE mart_provider_performance MODIFY COLUMN state_code SET TAG secure.data_classification = 'INTERNAL';
@@ -50,7 +49,6 @@ ALTER TABLE mart_provider_performance MODIFY COLUMN specialty_cost_index SET TAG
 
 -- mart_member_risk
 ALTER TABLE mart_member_risk MODIFY COLUMN member_id SET TAG secure.data_classification = 'PHI_LIKE';
-ALTER TABLE mart_member_risk MODIFY COLUMN member_id SET TAG secure.privacy_handling = 'HASH';
 ALTER TABLE mart_member_risk MODIFY COLUMN birth_year SET TAG secure.data_classification = 'PHI_LIKE';
 ALTER TABLE mart_member_risk MODIFY COLUMN birth_year SET TAG secure.privacy_handling = 'GENERALISE';
 ALTER TABLE mart_member_risk MODIFY COLUMN age_years SET TAG secure.data_classification = 'PHI_LIKE';

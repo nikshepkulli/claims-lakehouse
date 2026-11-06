@@ -88,6 +88,9 @@ jobs:
       DBT_PROFILES_DIR: dbt
       DBT_DUCKDB_PATH: data/e2e/claims.duckdb
       PYTHONPATH: src
+      # Gold needs a pseudonymisation key (#71). FAKE, public, test-only: the data is synthetic and
+      # the lake is thrown away with the runner. A real key is never put in this file.
+      LAKEHOUSE_PSEUDONYM_KEY: GOLD-TESTS-ONLY-NOT-A-SECRET-0123456789
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6

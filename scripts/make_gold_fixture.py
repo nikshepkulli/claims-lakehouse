@@ -17,6 +17,8 @@ What it does, in DuckDB SQL, to approximate silver -> gold:
   * build dim_member / dim_provider as SCD2 with a deterministic subset of entities
     getting a second version on 2024-07-01, and point facts at the version valid on the
     service date, so the SCD2 tests in dbt have something real to check;
+  * tokenise member_id / provider_id with the keyed HMAC tokeniser and derive surrogate keys
+    from the tokens, exactly as the Spark gold does (ticket #71). Test key: FIXTURE_DEV_KEY;
   * cast every column to the exact DDL type (GOLD_SCHEMA below).
 
 Using the real gold instead: GOLD_PATH=<gold root>/export (or dbt --vars
@@ -31,6 +33,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -121,6 +124,12 @@ GOLD_SCHEMA: dict[str, list[tuple[str, str, bool]]] = {
 }
 
 BATCH_ID = "FIXTURE-NOT-SPARK-GOLD"
+
+# TEST-ONLY pseudonymisation key (ticket #71). Deliberately fake, labelled and public: it
+# protects nothing and exists so the fixture builds without a secret. Key id "fx" marks every
+# fixture token. If LAKEHOUSE_PSEUDONYM_KEY is set, that key is used instead (like real gold).
+FIXTURE_DEV_KEY = "FIXTURE-ONLY-NOT-A-SECRET-0123456789-abcdef"
+FIXTURE_KEY_ID = "fx"
 SCD2_SPLIT = "2024-07-01"
 
 ICD_RE = r"^[A-TV-Z]\d[0-9A-Z](\.[0-9A-Z]{1,4})?$"
@@ -144,8 +153,25 @@ def build(raw: Path, out: Path) -> dict[str, int]:
 
     sys.path.insert(0, str(ROOT / "src"))
     from claimsgen.reference import DIAGNOSES
+    from lakehouse.governance.tokenise import KEY_ENV_VAR, Tokeniser
+
+    # Same scheme as the Spark gold (gold/keys.py): ids become keyed HMAC tokens and the
+    # member/provider surrogate keys are sha256 over (kind, token, effective_from).
+    tk = (
+        Tokeniser.from_env()
+        if os.environ.get(KEY_ENV_VAR)
+        else Tokeniser(FIXTURE_DEV_KEY, FIXTURE_KEY_ID)
+    )
+    memo: dict[tuple[str, str], str] = {}
+
+    def tok(value: str, domain: str) -> str:
+        key = (value, domain)
+        if key not in memo:
+            memo[key] = tk.token(value, domain)
+        return memo[key]
 
     con = duckdb.connect()
+    con.create_function("tok", tok, ["VARCHAR", "VARCHAR"], "VARCHAR")
     for t in ("members", "providers", "claims", "claim_lines", "diagnoses"):
         con.execute(
             f"CREATE VIEW raw_{t} AS "
@@ -254,7 +280,7 @@ def build(raw: Path, out: Path) -> dict[str, int]:
           AND regexp_matches(icd10_code, '{ICD_RE}')"""
     )
 
-    sk = "md5({id} || '|' || CAST(effective_from AS VARCHAR))"
+    sk = "sha256('{kind}:v1|' || tok({id}, '{kind}') || '|' || CAST(effective_from AS VARCHAR))"
     views: dict[str, str] = {}
     views["dim_date"] = _select(
         "dim_date",
@@ -275,8 +301,9 @@ def build(raw: Path, out: Path) -> dict[str, int]:
         "dim_member",
         "member_versions",
         {
-            "member_sk": sk.format(id="member_id"),
-            "record_hash": "md5(concat_ws('|', birth_year, sex, state, plan_type, "
+            "member_sk": sk.format(kind="member", id="member_id"),
+            "member_id": "tok(member_id, 'member')",
+            "record_hash": "sha256(concat_ws('|', birth_year, sex, state, plan_type, "
             "enrollment_date))",
             "load_batch_id": f"'{BATCH_ID}'",
             "loaded_at": "now()",
@@ -286,8 +313,9 @@ def build(raw: Path, out: Path) -> dict[str, int]:
         "dim_provider",
         "provider_versions",
         {
-            "provider_sk": sk.format(id="provider_id"),
-            "record_hash": "md5(concat_ws('|', specialty, state, network_status, cost_tier))",
+            "provider_sk": sk.format(kind="provider", id="provider_id"),
+            "provider_id": "tok(provider_id, 'provider')",
+            "record_hash": "sha256(concat_ws('|', specialty, state, network_status, cost_tier))",
             "load_batch_id": f"'{BATCH_ID}'",
             "loaded_at": "now()",
         },
@@ -297,7 +325,7 @@ def build(raw: Path, out: Path) -> dict[str, int]:
         "(SELECT c.icd10_code, d.description FROM (SELECT DISTINCT icd10_code FROM dx_ok) c "
         "LEFT JOIN icd_desc d ON d.code = c.icd10_code)",
         {
-            "diagnosis_sk": "md5(icd10_code)",
+            "diagnosis_sk": "sha256('diagnosis:v1|' || icd10_code)",
             "icd10_chapter": "left(icd10_code, 1)",
             "description": "coalesce(description, 'Synthetic ICD-10 code')",
             "load_batch_id": f"'{BATCH_ID}'",
@@ -307,8 +335,10 @@ def build(raw: Path, out: Path) -> dict[str, int]:
     views["fact_claim"] = _select(
         "fact_claim",
         """(SELECT c.*,
-                   mv.member_id || '|' || CAST(mv.effective_from AS VARCHAR) AS m_key,
-                   pv.provider_id || '|' || CAST(pv.effective_from AS VARCHAR) AS p_key,
+                   'member:v1|' || tok(mv.member_id, 'member') || '|'
+                       || CAST(mv.effective_from AS VARCHAR) AS m_key,
+                   'provider:v1|' || tok(pv.provider_id, 'provider') || '|'
+                       || CAST(pv.effective_from AS VARCHAR) AS p_key,
                    (SELECT icd10_code FROM dx_ok x
                     WHERE x.claim_id = c.claim_id AND x.diagnosis_type = 'PRIMARY'
                     ORDER BY dx_seq LIMIT 1) AS primary_code
@@ -321,10 +351,10 @@ def build(raw: Path, out: Path) -> dict[str, int]:
              AND (pv.effective_to IS NULL OR c.service_date < CAST(pv.effective_to AS DATE))
            )""",
         {
-            "member_sk": "md5(m_key)",
-            "provider_sk": "md5(p_key)",
+            "member_sk": "sha256(m_key)",
+            "provider_sk": "sha256(p_key)",
             "primary_diagnosis_sk": "CASE WHEN primary_code IS NULL THEN NULL "
-            "ELSE md5(primary_code) END",
+            "ELSE sha256('diagnosis:v1|' || primary_code) END",
             "service_date_key": "CAST(strftime(service_date, '%Y%m%d') AS INTEGER)",
             "received_date_key": "CAST(strftime(received_date, '%Y%m%d') AS INTEGER)",
             "load_batch_id": f"'{BATCH_ID}'",

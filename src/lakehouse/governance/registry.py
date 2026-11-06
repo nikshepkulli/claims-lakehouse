@@ -10,7 +10,7 @@ import yaml
 
 CLASSIFICATIONS = ("PUBLIC", "INTERNAL", "CONFIDENTIAL", "PHI_LIKE")
 IDENTIFIERS = ("direct", "quasi", "none")
-HANDLINGS = ("none", "hash", "mask", "generalise", "drop")
+HANDLINGS = ("none", "token", "mask", "generalise", "drop")
 LAYERS = ("gold", "mart")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -87,6 +87,8 @@ def _validate(col: Column) -> None:
     if col.classification == "PUBLIC" and col.identifier != "none":
         raise RegistryError(f"{where}: a PUBLIC column cannot be an identifier")
     if col.identifier == "direct" and col.handling == "none":
-        raise RegistryError(f"{where}: a direct identifier must be hashed, masked or dropped")
+        raise RegistryError(f"{where}: a direct identifier must be tokenised, masked or dropped")
+    if col.handling == "token" and not col.justification:
+        raise RegistryError(f"{where}: handling token needs a justification (which key, where)")
     if col.sensitive and col.handling == "none" and not col.justification:
         raise RegistryError(f"{where}: sensitive column with handling none needs a justification")

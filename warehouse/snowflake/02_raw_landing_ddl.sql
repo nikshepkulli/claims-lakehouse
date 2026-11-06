@@ -38,7 +38,7 @@ COMMENT = 'Append-only landing copy of gold dim_date Parquet export. Deduplicate
 
 CREATE TABLE IF NOT EXISTS landing_dim_member (
     member_sk VARCHAR(64),
-    member_id VARCHAR(10),
+    member_id VARCHAR(48),
     birth_year SMALLINT,
     sex VARCHAR(1),
     state VARCHAR(2),
@@ -56,7 +56,7 @@ COMMENT = 'Append-only landing copy of gold dim_member Parquet export. Deduplica
 
 CREATE TABLE IF NOT EXISTS landing_dim_provider (
     provider_sk VARCHAR(64),
-    provider_id VARCHAR(10),
+    provider_id VARCHAR(48),
     specialty VARCHAR(60),
     state VARCHAR(2),
     network_status VARCHAR(20),

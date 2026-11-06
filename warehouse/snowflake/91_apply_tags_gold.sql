@@ -23,7 +23,6 @@ ALTER TABLE dim_date MODIFY COLUMN is_weekend SET TAG secure.data_classification
 -- dim_member
 ALTER TABLE dim_member MODIFY COLUMN member_sk SET TAG secure.data_classification = 'INTERNAL';
 ALTER TABLE dim_member MODIFY COLUMN member_id SET TAG secure.data_classification = 'PHI_LIKE';
-ALTER TABLE dim_member MODIFY COLUMN member_id SET TAG secure.privacy_handling = 'HASH';
 ALTER TABLE dim_member MODIFY COLUMN birth_year SET TAG secure.data_classification = 'PHI_LIKE';
 ALTER TABLE dim_member MODIFY COLUMN birth_year SET TAG secure.privacy_handling = 'GENERALISE';
 ALTER TABLE dim_member MODIFY COLUMN sex SET TAG secure.data_classification = 'CONFIDENTIAL';
@@ -42,7 +41,6 @@ ALTER TABLE dim_member MODIFY COLUMN loaded_at SET TAG secure.data_classificatio
 -- dim_provider
 ALTER TABLE dim_provider MODIFY COLUMN provider_sk SET TAG secure.data_classification = 'INTERNAL';
 ALTER TABLE dim_provider MODIFY COLUMN provider_id SET TAG secure.data_classification = 'CONFIDENTIAL';
-ALTER TABLE dim_provider MODIFY COLUMN provider_id SET TAG secure.privacy_handling = 'HASH';
 ALTER TABLE dim_provider MODIFY COLUMN specialty SET TAG secure.data_classification = 'INTERNAL';
 ALTER TABLE dim_provider MODIFY COLUMN state SET TAG secure.data_classification = 'INTERNAL';
 ALTER TABLE dim_provider MODIFY COLUMN network_status SET TAG secure.data_classification = 'INTERNAL';

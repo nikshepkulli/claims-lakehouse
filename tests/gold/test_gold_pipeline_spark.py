@@ -286,3 +286,68 @@ def test_parquet_export_equals_the_delta_table_and_the_ddl(pipeline, table):
     # loaded_at is a run timestamp: the idempotency test re-runs batches after the export
     cols = [c for c in out.columns if c != "loaded_at"]
     assert out.select(*cols).exceptAll(delta_rows.select(*cols)).count() == 0
+
+
+# ---------------------------------------- privacy: keyed tokens, no raw ids (ticket #71)
+
+
+def _values(df):
+    return {r[0] for r in df.collect() if r[0] is not None}
+
+
+def test_gold_and_export_hold_keyed_tokens_not_source_ids_or_unkeyed_hashes(pipeline):
+    """Every member/provider id in gold, the export and the exclusions detail is a token of the
+    configured key; no source id and no unkeyed digest of one appears in any gold cell."""
+    import hashlib
+    import re
+
+    from lakehouse.governance.tokenise import KeyRing
+
+    p = pipeline
+    ring = KeyRing.from_env()
+    src = {
+        "member": _values(s(p, "members").select("member_id")),
+        "provider": _values(s(p, "providers").select("provider_id")),
+    }
+    assert len(src["member"]) > 100 and len(src["provider"]) > 10
+    for table, col, dom in (
+        ("dim_member", "member_id", "member"),
+        ("dim_provider", "provider_id", "provider"),
+    ):
+        for df in (g(p, table), p.spark.read.parquet(f"{p.gold}/export/{table}")):
+            toks = _values(df.select(col))
+            assert toks and all(ring.is_current(t) for t in toks)
+            assert toks == {ring.token(i, dom) for i in src[dom]}  # injective + complete
+
+    needles = set(src["member"]) | set(src["provider"])
+    for i in list(needles):
+        for msg in (i, f"member:v1|{i}", f"provider:v1|{i}"):
+            needles |= {
+                hashlib.sha256(msg.encode()).hexdigest(),
+                hashlib.md5(msg.encode()).hexdigest(),
+            }
+    raw_id = re.compile(r"(?<![A-Za-z0-9])(?:M\d{9}|PRV\d{7})(?![0-9])")
+    for table in [*TABLES, "gold_exclusions"]:
+        df = g(p, table)
+        for col in df.columns:
+            vals = _values(df.select(F.col(col).cast("string")))
+            assert not (vals & needles), f"{table}.{col} holds a source id or an unkeyed digest"
+            assert not any(raw_id.search(v) for v in vals), f"{table}.{col} embeds a source id"
+
+
+def test_surrogate_keys_are_derived_from_the_keyed_token(pipeline):
+    import hashlib
+
+    p = pipeline
+    for table, col, sk, kind in (
+        ("dim_member", "member_id", "member_sk", "member"),
+        ("dim_provider", "provider_id", "provider_sk", "provider"),
+    ):
+        rows = (
+            g(p, table)
+            .select(col, sk, F.date_format("effective_from", "yyyy-MM-dd HH:mm:ss"))
+            .limit(200)
+            .collect()
+        )
+        for tok, key, eff in rows:
+            assert key == hashlib.sha256(f"{kind}:v1|{tok}|{eff}".encode()).hexdigest()

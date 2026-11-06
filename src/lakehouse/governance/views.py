@@ -22,10 +22,9 @@ def _q(name: str) -> str:
 def masked_expression(col: Column, sql_type: str) -> str:
     c = _q(col.name)
     t = sql_type.upper()
-    if col.handling == "none":
+    if col.handling in ("none", "token"):
+        # token: the stored value is already a keyed pseudonym (tests scan for raw ids).
         return c
-    if col.handling == "hash":
-        return f"sha256(CAST({c} AS VARCHAR))"
     if col.handling == "mask":
         return (
             f"CASE WHEN {c} IS NULL THEN NULL ELSE "

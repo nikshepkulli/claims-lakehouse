@@ -74,3 +74,11 @@ def test_dbt_gold_path_switch_defaults_to_the_fixture():
     assert m, "external_location not found"
     assert "gold_path" in m.group(1) and "GOLD_PATH" in m.group(1)
     assert "'data/gold'" in m.group(1)
+
+
+def test_identifier_columns_fit_a_keyed_token():
+    """#71: gold member_id / provider_id hold tok_<key_id>_<32 hex> (<= 45 chars), not 10 chars."""
+    from lakehouse.governance.tokenise import MAX_TOKEN_LENGTH
+
+    assert varchar_lengths("dim_member")["member_id"] >= MAX_TOKEN_LENGTH
+    assert varchar_lengths("dim_provider")["provider_id"] >= MAX_TOKEN_LENGTH

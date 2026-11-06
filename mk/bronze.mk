@@ -15,6 +15,7 @@ SPARK_TESTS ?= tests/bronze
 define SPARK_RUN
 docker run --rm -u root -e HOME=/cache/home -e PYTHONPATH=/work/src:/cache/py \
 	-e LAKEHOUSE_S3_ENDPOINT -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+	-e LAKEHOUSE_PSEUDONYM_KEY -e LAKEHOUSE_PSEUDONYM_KEY_ID -e LAKEHOUSE_PSEUDONYM_RETIRED_KEYS \
 	-v "$(CURDIR)":/work -v $(SPARK_CACHE_VOL):/cache -w /work --entrypoint bash $(SPARK_IMAGE) -c \
 	'unset SPARK_HOME; h=$$(cat requirements-*.txt | md5sum | cut -c1-12); \
 	 [ -f /cache/ok-$$h ] || { rm -rf /cache/py /cache/ok-*; pip install -q --disable-pip-version-check --target /cache/py -r requirements-spark.txt && touch /cache/ok-$$h; } && $(1)'

@@ -53,17 +53,21 @@ def resolve_dimensions(
     cannot multiply rows.
     """
     svc = F.col("service_date").cast("timestamp_ntz")
+    # Tokenise BEFORE the join: a Python UDF is not allowed inside a join condition.
+    claims = claims.withColumn("_m_tok", natural_id(F.col("member_id"), "member")).withColumn(
+        "_p_tok", natural_id(F.col("provider_id"), "provider")
+    )
     m = _as_of(dim_member, "member_id", "member_sk", "_m")
     p = _as_of(dim_provider, "provider_id", "provider_sk", "_p")
     out = claims.join(
         m,
-        (natural_id(F.col("member_id")) == F.col("_m_id"))
+        (F.col("_m_tok") == F.col("_m_id"))
         & (svc >= F.col("_m_from"))
         & (F.col("_m_to").isNull() | (svc < F.col("_m_to"))),
         "left",
     ).join(
         p,
-        (natural_id(F.col("provider_id")) == F.col("_p_id"))
+        (F.col("_p_tok") == F.col("_p_id"))
         & (svc >= F.col("_p_from"))
         & (F.col("_p_to").isNull() | (svc < F.col("_p_to"))),
         "left",
@@ -128,10 +132,10 @@ def build_facts(
         F.col("line_count").cast("string"),
         F.lit("lines_in_silver="),
         F.coalesce(F.col("_n"), F.lit(0)).cast("string"),
-        F.lit("member_id="),
-        F.col("member_id"),
+        F.lit("member_id="),  # keyed tokens: this operational table must not hold raw ids
+        F.col("_m_tok"),
         F.lit("provider_id="),
-        F.col("provider_id"),
+        F.col("_p_tok"),
     )
     c = c.withColumn("_reason", reason).withColumn("_detail", detail).persist()
 
