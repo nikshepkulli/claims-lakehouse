@@ -60,5 +60,5 @@ def test_gold_mk_registers_the_suite_and_the_targets():
 
 def test_ci_runs_gold_in_the_spark_matrix_and_the_e2e_job():
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    assert re.search(r"suite:\s*\[[^\]]*\bgold\b", ci)
+    assert re.search(r"suite:\s*gold\s+path:\s*tests/gold", ci)
     assert "pipeline e2e" in ci
