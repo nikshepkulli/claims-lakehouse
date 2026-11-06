@@ -1,0 +1,46 @@
+flowchart TB
+  GEN["Synthetic claims generator<br/>seeded, with injected defects"]
+
+  subgraph BATCH["Batch path (Spark + Delta Lake)"]
+    direction LR
+    BRZ["BRONZE<br/>raw copy, append-only<br/>schema drift logged"]
+    SLV["SILVER<br/>typed, deduplicated,<br/>rule-checked"]
+    GLD["GOLD<br/>star schema: facts + dimensions<br/>SCD2 history, reconciled to silver"]
+    QUA[("Quarantine<br/>bad rows + reason code")]
+    BRZ --> SLV --> GLD
+    BRZ -.-> QUA
+    SLV -.-> QUA
+  end
+
+  subgraph STREAM["Streaming path"]
+    direction LR
+    RP["Redpanda (Kafka)<br/>JSON Schema contract"]
+    SS["Spark Structured Streaming<br/>watermark, late-data diversion,<br/>idempotent writes"]
+    DLQ[("Dead-letter topic + table<br/>invalid events")]
+    RP --> SS
+    RP -.-> DLQ
+    SS -.-> DLQ
+  end
+
+  subgraph SERVE["Analytics (dbt + Snowflake)"]
+    direction LR
+    DBT["dbt: staging, marts,<br/>186 models and tests<br/>(run on DuckDB)"]
+    SNOW["Snowflake roles, warehouses,<br/>DDL, masking policies<br/>(validated offline only)"]
+    MART["Marts + metric definitions<br/>PMPM, denial rate"]
+    DBT --> MART
+  end
+
+  subgraph INFRA["Infrastructure and delivery"]
+    direction LR
+    TF["Terraform<br/>AWS S3/KMS/IAM, Azure ADLS/RBAC,<br/>Snowflake"]
+    CI["CI on every PR<br/>lint, tests, e2e, terraform validate"]
+    CD["CD: OIDC plan/apply<br/>manual approval<br/>(never run on a real cloud)"]
+    CI --> CD --> TF
+  end
+
+  GEN -->|batch files| BRZ
+  GEN -->|claim events| RP
+  SS -->|claim-event tables| SLV
+  GLD -->|Parquet export| DBT
+  GLD -.->|load, not yet run live| SNOW
+  TF -.->|provisions storage for| BRZ
