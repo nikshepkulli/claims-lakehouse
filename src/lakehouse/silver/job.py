@@ -187,14 +187,14 @@ def silver_batch(
     try:
         for name in todo:
             df = bronze[name]
-            if df is None or df.limit(1).count() == 0:
+            bronze_rows = 0 if df is None else df.count()
+            if bronze_rows == 0:
                 results[name] = DatasetResult(name, batch_id, skipped=True)
                 if name == "claims":  # keep children well-defined: no claims -> every ref misses
                     refs["claims_in_batch"] = refs["claims_valid"] = spark.createDataFrame(
                         [], "id string"
                     )
                 continue
-            bronze_rows = df.count()
             if name == "claims":
                 refs["members"] = reference_ids(spark, bronze_root, "members", "member_id")
                 refs["providers"] = reference_ids(spark, bronze_root, "providers", "provider_id")
