@@ -130,6 +130,14 @@ def test_flagged_providers_are_consistent_with_peer_index(built):
     assert sum(t["flagged"] for t in p["tier_summary"].values()) == len(p["flagged"])
 
 
+def test_provider_labels_are_short_but_tokens_stay_full(built):
+    p = built["payload"]["providers"]
+    for r in p["peer_index"] + p["flagged"]:
+        assert len(r["provider_label"]) <= 7
+        assert r["provider_id"].endswith(r["provider_label"].lstrip("\u2026"))
+    assert any(len(r["provider_id"]) > 12 for r in p["peer_index"])  # keyed tokens, full in data
+
+
 def test_quality_section_matches_gold_and_manifest(built):
     q = built["payload"]["quality"]
     assert all(i["status"] == "pass" for i in q["invariants"]), q["invariants"]
@@ -200,6 +208,25 @@ def test_extension_points_render_when_supplied(built, tmp_path):
     q = json.loads(m.group(1))["quality"]
     assert q["quality_framework"]["suites"][0]["failed"] == 1
     assert q["reconciliation"][0]["batch_id"] == "b20240101"
+
+
+def test_runner_result_json_renders_in_page(built, tmp_path):
+    from dashboard.build import build
+
+    qj = tmp_path / "gold-result.json"
+    qj.write_text(json.dumps({"layer": "gold", "great_expectations_version": "1.11.3", "tables": {
+        "fact_claim": {"status": "validated", "problem": None,
+                       "expectations": [{"success": True}, {"success": True}]},
+        "gold_exclusions": {"status": "missing", "problem": "not found", "expectations": []},
+    }}))  # fmt: skip
+    out = build(built["gold"], tmp_path / "site", quality_json=qj)
+    html = out.read_text()
+    m = re.search(r'id="dashboard-data">(.*?)</script>', html, re.S)
+    suites = json.loads(m.group(1))["quality"]["quality_framework"]["suites"]
+    assert [(s["name"], s["status"]) for s in suites] == [
+        ("gold.fact_claim", "validated"),
+        ("gold.gold_exclusions", "missing"),
+    ]
 
 
 def test_gold_root_with_export_subdir_is_resolved(built, tmp_path):

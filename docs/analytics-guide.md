@@ -2,7 +2,7 @@
 
 Ticket #17 (M3). For analysts and BI developers. You query the four `marts.mart_*` tables and never staging, intermediate or raw data. All data is synthetic.
 
-> **What this is built on.** The marts are built by the dbt project in `dbt/` (see [dbt.md](dbt.md)). Today that runs on **DuckDB against a gold-shaped test fixture** made from the data generator, not on the Spark gold layer (#8, not merged) and not on Snowflake (never run). Every number below describes that fixture (5,000 generated claims, seed 42, service year 2024). Where this guide says "defects are excluded", it means the fixture's approximation of the gold quarantine rules, not the real gold job.
+> **What this is built on.** The marts are built by the dbt project in `dbt/` (see [dbt.md](dbt.md)). Today that runs on **DuckDB against a gold-shaped test fixture** made from the data generator, not on the Spark gold layer by default (the gold layer, #8, is merged and `make gold-dbt` builds the same models on its real export; the dashboard and this guide's numbers still come from the fixture) and not on Snowflake (never run). Every number below describes that fixture (5,000 generated claims, seed 42, service year 2024). Where this guide says "defects are excluded", it means the fixture's approximation of the gold quarantine rules, not the real gold job.
 
 ## Metric definitions (in code)
 

@@ -124,6 +124,16 @@ def _with_ci(rows: list[dict], n_key: str, k_key: str) -> list[dict]:
     return rows
 
 
+def short_label(token: str, n: int = 6) -> str:
+    """Display label for a long keyed token (``tok_fx_81314f...``): ellipsis plus its last ``n``
+    characters. Short ids are returned unchanged. The full token stays in tooltips and tables."""
+    return token if len(token) <= n + 4 else "\u2026" + token[-n:]
+
+
+def _with_labels(rows: list[dict]) -> list[dict]:
+    return [{**r, "provider_label": short_label(str(r["provider_id"]))} for r in rows]
+
+
 def assemble(queries: dict[str, dict], qual: dict, gold: Path, gold_label: str) -> dict:
     """Combine query results and quality inputs into the single payload the page renders."""
     q = {k: v["rows"] for k, v in queries.items()}
@@ -196,8 +206,8 @@ def assemble(queries: dict[str, dict], qual: dict, gold: Path, gold_label: str) 
             "has_reason_or_payer": False,
         },
         "providers": {
-            "peer_index": peers,
-            "flagged": flagged,
+            "peer_index": _with_labels(peers),
+            "flagged": _with_labels(flagged),
             "specialty_benchmark": q["06_specialty_benchmark"],
             "tier_summary": tiers,
             "flag_threshold": 1.25,

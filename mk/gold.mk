@@ -18,8 +18,8 @@ gold: ## Build the Delta gold star schema + Parquet export from silver in Docker
 	$(call SPARK_RUN,python3 -m lakehouse.gold --silver $(SILVER) --gold $(GOLD) --batch-date $(BATCH_DATE))
 
 gold-dbt: dbt/profiles.yml ## dbt build on DuckDB against the REAL gold export ($(GOLD)/export) instead of the fixture
-	GOLD_PATH=$(GOLD)/export $(DBT) deps
-	GOLD_PATH=$(GOLD)/export $(DBT) build --target $(DBT_TARGET)
+	GOLD_PATH=$(GOLD)/export $(DBT) deps $(DBT_FLAGS)
+	GOLD_PATH=$(GOLD)/export $(DBT) build $(DBT_FLAGS) --target $(DBT_TARGET)
 
 E2E ?= data/e2e
 E2E_DS ?= claims,claim_lines,diagnoses,members,providers

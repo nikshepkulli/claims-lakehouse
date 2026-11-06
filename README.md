@@ -2,7 +2,9 @@
 
 A data platform that turns messy health-insurance claims into trusted, queryable, privacy-aware data, built on 100% synthetic records and designed to run on AWS and Azure.
 
-> **Status (2026-11-06): partly built.** The batch pipeline, streaming ingest, dbt models, Terraform and CI work and are tested. Airflow, Great Expectations, streaming quality gates, keyed privacy tokens and the dashboard are **in progress or planned**. Nothing has been run on a real cloud account. See [What is real vs simulated](#what-is-real-vs-simulated).
+> **Status (2026-11-06): mostly built, nothing run on a real cloud.** The batch pipeline, streaming with quality gates, dbt models, Great Expectations checks, keyed privacy tokens, observability, an Airflow DAG, a Databricks bundle, a governed Q&A prototype, a feature store, Terraform, CI and a dashboard are written and tested on synthetic data. Lineage and the machine-learning pipeline are **in progress**. No AWS, Azure, Snowflake or Databricks account has ever been used. See [What is real vs simulated](#what-is-real-vs-simulated).
+
+**Live dashboard: <https://nikshepkulli.github.io/claims-lakehouse/>**: cost, denials, provider performance and a data-quality view. It is built from a synthetic, gold-shaped test fixture (not from the Spark pipeline output) and says so on the page. Details: [docs/dashboard.md](docs/dashboard.md).
 
 ## What problem this solves
 
@@ -24,9 +26,10 @@ This platform ingests the raw feed, keeps an untouched copy, cleans and checks e
 | Layers | Bronze (raw), silver (cleaned), gold (star schema), plus a Snowflake and dbt analytics layer |
 | Compute and storage | Spark 3.5 and Delta Lake; Redpanda (Kafka-compatible) for streaming; DuckDB for local dbt |
 | Clouds (as code) | AWS (S3, KMS, IAM) and Azure (ADLS Gen2, RBAC) Terraform modules; Snowflake Terraform and SQL |
-| Tests | 302 tests run on any laptop without Spark; about 69 more Spark test functions run in CI; 186 dbt models and tests pass on DuckDB |
-| CI | 21 checks on a typical pull request: lint, unit tests, Spark tests in 5 parallel legs, end-to-end pipeline, dbt build, SQL lint, Terraform validate on 7 roots, a non-blocking security scan, and a ticket-link check |
-| Tickets | 42 GitHub issues, 19 closed, 24 pull requests merged (as of 2026-11-06); see the [roadmap](https://github.com/nikshepkulli/claims-lakehouse/issues/48) |
+| Tests | 697 tests pass on a laptop without Spark (13 more skip unless optional tools such as boto3 or the Databricks CLI are installed); about 90 Spark test functions run in CI; 186 dbt models and tests pass on DuckDB |
+| CI | 23 checks on a typical pull request: lint, unit tests, Spark tests in 6 parallel legs, end-to-end pipeline (with Great Expectations quality gates), dbt build, SQL lint, Databricks bundle validation, dashboard build, Terraform validate on 7 roots, a non-blocking security scan, and a ticket-link check. Airflow DAG checks and the dbt workflow run on matching changes only |
+| Tickets | 45 GitHub issues, 23 closed, 35 pull requests merged (as of 2026-11-06, counted from GitHub); see the [roadmap](https://github.com/nikshepkulli/claims-lakehouse/issues/48) |
+| Dashboard | **[Live on GitHub Pages](https://nikshepkulli.github.io/claims-lakehouse/)**, built from the synthetic gold-shaped fixture and labelled as such; redeployed by hand, so it can lag `main` |
 | Data | Synthetic only. Seeded generator with injected defects. No real patient data |
 
 ## Architecture
@@ -109,6 +112,7 @@ Example pull requests to read:
 | [#74](https://github.com/nikshepkulli/claims-lakehouse/pull/74) | Streaming with watermarks and idempotent writes |
 | [#75](https://github.com/nikshepkulli/claims-lakehouse/pull/75) | Gold star schema with history (SCD2) and reconciliation |
 | [#68](https://github.com/nikshepkulli/claims-lakehouse/pull/68) | PII classification and masking policies |
+| [#87](https://github.com/nikshepkulli/claims-lakehouse/pull/87) | Replacing reversible id hashes with keyed tokens |
 
 ## Requirement-to-code mapping
 
@@ -118,19 +122,20 @@ Mapped against a Senior Data Engineer job description (AWS and Azure, Databricks
 | --- | --- | --- | --- |
 | Python and SQL | Seeded data generator, pipeline code, SQL marts and analyst queries | [src/](src), [analytics/queries](analytics/queries), [docs/data-generator.md](docs/data-generator.md) | Done |
 | Spark (batch) | Bronze, silver, gold jobs on Spark and Delta Lake, tested end to end in CI | [bronze](docs/bronze.md), [silver](docs/silver.md), [gold](docs/gold.md) | Done |
-| Databricks | Jobs are plain Spark; the Databricks bundle is not written. Local Spark only | [ADR-0002](docs/adr/0002-delta-vs-iceberg.md), ticket [#10](https://github.com/nikshepkulli/claims-lakehouse/issues/10) | Planned |
-| Kafka and streaming | Redpanda topics, schema contract, producer, Spark Structured Streaming with watermark and late-data handling | [streaming](docs/streaming.md), [streaming-spark](docs/streaming-spark.md), [ADR-0004](docs/adr/0004-streaming-contract-format.md) | Done (local stack only) |
+| Databricks | Asset Bundle (dev and prod targets, one three-task job) that runs the same Spark jobs; checked offline with the real Databricks CLI against a stub. Never deployed, never run on Databricks | [databricks](docs/databricks.md), [ADR-0002](docs/adr/0002-delta-vs-iceberg.md), PR [#79](https://github.com/nikshepkulli/claims-lakehouse/pull/79), ticket [#10](https://github.com/nikshepkulli/claims-lakehouse/issues/10) | Written and validated offline only (ticket open for a live run) |
+| Kafka and streaming | Redpanda topics, schema contract, producer, Spark Structured Streaming with watermark and late-data handling, per-batch quality gates, dead-letter table and replay (PR [#88](https://github.com/nikshepkulli/claims-lakehouse/pull/88)) | [streaming](docs/streaming.md), [streaming-spark](docs/streaming-spark.md), [ADR-0004](docs/adr/0004-streaming-contract-format.md) | Done on the local stack, with a file source in CI; the Kafka dead-letter publish and Kafka replay paths are written but unverified (ticket [#13](https://github.com/nikshepkulli/claims-lakehouse/issues/13) stays open) |
 | Snowflake | Warehouses, roles, resource monitors, DDL, load and merge SQL as code; never executed on Snowflake | [docs/snowflake.md](docs/snowflake.md) | In progress (ticket [#14](https://github.com/nikshepkulli/claims-lakehouse/issues/14) open for live run; tuning [#16](https://github.com/nikshepkulli/claims-lakehouse/issues/16) planned) |
 | dbt and data modelling | Kimball star schema with SCD2; dbt staging, marts, tests and metric definitions; 186 models and tests pass on DuckDB | [gold](docs/gold.md), [dbt](docs/dbt.md), [analytics guide](docs/analytics-guide.md) | Done on DuckDB; Snowflake run open (ticket [#15](https://github.com/nikshepkulli/claims-lakehouse/issues/15)) |
 | Terraform and IaC | AWS S3/KMS/IAM, Azure ADLS/RBAC, Snowflake modules; `fmt` and `validate` in CI | [infra-aws](docs/infra-aws.md), [infra-azure](docs/infra-azure.md) | Done (validate only, never applied) |
 | AWS and Azure, cloud-agnostic design | Storage URI abstraction (`file`, `s3a`, `abfss`) and a stated portable-core boundary | [multi-cloud](docs/multi-cloud.md), [ADR-0003](docs/adr/0003-cloud-agnostic-boundary.md) | Done as code and design; not run on either cloud |
 | CI/CD | CI on every PR; OIDC plan/apply workflows with manual approval | [ci](docs/ci.md), [cd](docs/cd.md) | CI done; CD written, never executed |
-| Data quality | Rule-based silver checks, quarantine, reconciliation identity asserted in code, contract compatibility tests | [silver](docs/silver.md), [streaming](docs/streaming.md) | Done; Great Expectations suites ([#22](https://github.com/nikshepkulli/claims-lakehouse/issues/22)) and streaming quality gates ([#13](https://github.com/nikshepkulli/claims-lakehouse/issues/13)) in progress / planned |
-| Governance and privacy | Column classification registry, masking policies, pseudonymisation, row access example; not a HIPAA claim | [privacy-and-access](docs/privacy-and-access.md) | In progress (Snowflake policies never executed; keyed tokens in Snowflake, ticket [#71](https://github.com/nikshepkulli/claims-lakehouse/issues/71), planned) |
-| Lineage and observability | Marquez is in the local stack; no pipeline emits lineage events or alerts yet | [local-stack](docs/local-stack.md), tickets [#23](https://github.com/nikshepkulli/claims-lakehouse/issues/23), [#24](https://github.com/nikshepkulli/claims-lakehouse/issues/24) | Planned |
-| Orchestration | Airflow 2.10 DAG: land, bronze, silver, gold, dbt, quality gates; per-date idempotent runs, backfill runbook, retries with backoff, SLAs, failure webhook; not deployed to MWAA/Astronomer | [orchestration](docs/orchestration.md), ticket [#9](https://github.com/nikshepkulli/claims-lakehouse/issues/9) | In review (PR #85); DAG import and structure tested in CI |
-| Self-service analytics | Curated marts and documented metrics (PMPM, denial rate); dashboard | [analytics guide](docs/analytics-guide.md), ticket [#29](https://github.com/nikshepkulli/claims-lakehouse/issues/29) | Marts done; dashboard in progress |
-| ML and GenAI readiness (SageMaker, Bedrock) | Governed gold data and masking are the foundation; no features, training or Q&A built | tickets [#26](https://github.com/nikshepkulli/claims-lakehouse/issues/26), [#27](https://github.com/nikshepkulli/claims-lakehouse/issues/27), [#28](https://github.com/nikshepkulli/claims-lakehouse/issues/28) | Planned |
+| Data quality | Rule-based silver checks, quarantine, reconciliation identity asserted in code, contract compatibility tests; Great Expectations suites per layer (PR [#82](https://github.com/nikshepkulli/claims-lakehouse/pull/82), ticket [#22](https://github.com/nikshepkulli/claims-lakehouse/issues/22) closed) run in CI on the real Spark output; streaming gates | [data-quality](docs/data-quality.md), [silver](docs/silver.md), [streaming](docs/streaming.md) | Done; GE reads local Delta/Parquet with pandas, not Spark; never run on a cloud |
+| Governance and privacy | Column classification registry, masking policies, row access example; member and provider ids are keyed HMAC tokens in gold (PR [#87](https://github.com/nikshepkulli/claims-lakehouse/pull/87), ticket [#71](https://github.com/nikshepkulli/claims-lakehouse/issues/71) closed, [ADR-0005](docs/adr/0005-keyed-tokens-for-identifiers.md)); not a HIPAA claim | [privacy-and-access](docs/privacy-and-access.md) | Tokens done and tested locally and in CI with a fake test key; Snowflake policies never executed; key-in-task-closure and single-key limits documented |
+| Observability | Run ledger, JSON logs, freshness and volume alerts (PR [#78](https://github.com/nikshepkulli/claims-lakehouse/pull/78)) | [observability](docs/observability.md), ticket [#23](https://github.com/nikshepkulli/claims-lakehouse/issues/23) | Built and tested on fixtures; not yet wired into the Spark jobs, Airflow or the dashboard (ticket open) |
+| Lineage | Marquez is in the local stack; OpenLineage events from the pipeline | [local-stack](docs/local-stack.md), ticket [#24](https://github.com/nikshepkulli/claims-lakehouse/issues/24) | In progress |
+| Orchestration | One Airflow 2.10 DAG (`claims_daily`: land, bronze, silver, gold, dbt, quality gates) with per-date idempotent runs, retries with backoff, SLAs and a failure webhook (PR [#85](https://github.com/nikshepkulli/claims-lakehouse/pull/85)) | [orchestration](docs/orchestration.md), ticket [#9](https://github.com/nikshepkulli/claims-lakehouse/issues/9) | DAG import and structure tested in CI; run with `airflow dags test` natively on one laptop; `airflow dags backfill` and the Docker path are unverified; never on MWAA or any cloud; ticket stays open |
+| Self-service analytics | Curated marts and documented metrics (PMPM, denial rate); [live dashboard](https://nikshepkulli.github.io/claims-lakehouse/) | [analytics guide](docs/analytics-guide.md), [dashboard](docs/dashboard.md), ticket [#29](https://github.com/nikshepkulli/claims-lakehouse/issues/29) | Done on the fixture; not yet built from Spark gold output (ticket open) |
+| ML and GenAI readiness (SageMaker, Bedrock) | Point-in-time feature store (PR [#84](https://github.com/nikshepkulli/claims-lakehouse/pull/84)); governed natural-language Q&A over gold with guardrails, tested with a fake model (PR [#86](https://github.com/nikshepkulli/claims-lakehouse/pull/86)); SageMaker training pipeline | [features](docs/features.md), [genai](docs/genai.md), tickets [#26](https://github.com/nikshepkulli/claims-lakehouse/issues/26), [#27](https://github.com/nikshepkulli/claims-lakehouse/issues/27), [#28](https://github.com/nikshepkulli/claims-lakehouse/issues/28) | Features done on a fixture export; Q&A tested offline only, **no Bedrock call has ever been made** and real-model accuracy is unmeasured (ticket open); SageMaker training (#27): in progress |
 
 ## What is real vs simulated
 
@@ -145,7 +150,15 @@ All data is synthetic, produced by [claimsgen](docs/data-generator.md). "CI" mea
 | Snowflake SQL, roles, masking policies | No | Syntax lint and structural tests only | No: no Snowflake account |
 | Terraform AWS, Azure, Snowflake | `fmt` and `validate` | `fmt`, `validate`, non-blocking security scan | No `plan` or `apply` ever |
 | CD (OIDC plan/apply) | No | Plan jobs are skipped until cloud variables exist | No |
-| Privacy rules | Yes (pure Python) and DuckDB model of the analyst view | Yes | Snowflake enforcement unverified |
+| Privacy rules and keyed tokens | Yes (pure Python; Spark gold with a fake test key) and DuckDB model of the analyst view | Yes (fake test key) | Snowflake enforcement unverified; no real key or secret store used |
+| Great Expectations quality checks | Yes (pandas and delta-rs, no Spark) | Yes, on the real Spark output of the end-to-end job | No |
+| Streaming quality gates, dead-letter table | Yes (local stack) | Gate logic with a file source; broker not in CI | Kafka dead-letter publish and Kafka replay: written, not run; no managed Kafka |
+| Observability (run ledger, alerts, freshness and volume checks) | Yes, on fixtures | Unit tests only | Not wired into Airflow, the Spark jobs or the dashboard; webhook tested against a local server only |
+| Airflow DAG | Yes: `airflow dags test` for three dates, natively (not Docker) | DAG import and structure tests | No; backfill and Docker path unverified; no MWAA or other service |
+| Databricks bundle | Validated offline with the Databricks CLI against a stub | Same validation | No: never deployed, never run on Databricks |
+| Features (point-in-time) | Yes, on a fixture export | Yes (unit tests) | No |
+| Governed Q&A (text-to-SQL) | Yes, with a deterministic fake model | Yes (offline tests) | No: the Bedrock client has never made a call |
+| Dashboard | Yes | Built and tested on every PR | Published to GitHub Pages ([live](https://nikshepkulli.github.io/claims-lakehouse/)), built from the synthetic fixture, not Spark output; no cloud account involved |
 
 Note: `make bronze`, `make silver`, `make gold` and `make test-spark` currently fail on a fresh laptop because of a Python and numpy version mismatch in the Spark image ([#76](https://github.com/nikshepkulli/claims-lakehouse/issues/76)). CI is unaffected and runs the full pipeline.
 
@@ -156,7 +169,7 @@ Needs Python 3.11 to 3.13. The last step also needs Docker. Run from the repo ro
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-make lint test                                                  # ruff and sqlfluff lint, then 302 tests
+make lint test                                                  # ruff and sqlfluff lint, then the tests that need no Spark
 PYTHONPATH=src python -m claimsgen --rows 2000 --seed 42 --out data/raw   # synthetic claims in ~2 seconds
 make demo                                                       # local stack: MinIO, Redpanda, Spark, Postgres
 make produce-demo                                               # stream 1,000 claim events through Redpanda
@@ -181,7 +194,7 @@ See [docs/index.md](docs/index.md) for the full list. Short version:
 | Audience | Start here |
 | --- | --- |
 | Managers | This page, the [ADR summary](docs/adr/README.md), the [glossary](docs/glossary.md) |
-| Engineers | [bronze](docs/bronze.md), [silver](docs/silver.md), [gold](docs/gold.md), [streaming](docs/streaming.md), [dbt](docs/dbt.md), [snowflake](docs/snowflake.md), [privacy](docs/privacy-and-access.md) |
+| Engineers | [bronze](docs/bronze.md), [silver](docs/silver.md), [gold](docs/gold.md), [streaming](docs/streaming.md), [dbt](docs/dbt.md), [data quality](docs/data-quality.md), [orchestration](docs/orchestration.md), [snowflake](docs/snowflake.md), [privacy](docs/privacy-and-access.md), [dashboard](docs/dashboard.md) |
 | Operators | [runbook](docs/runbook.md), [cd](docs/cd.md), [ci](docs/ci.md), [local stack](docs/local-stack.md) |
 
 ## Decisions worth knowing
@@ -190,6 +203,9 @@ See [docs/index.md](docs/index.md) for the full list. Short version:
 - [ADR-0002 Delta Lake](docs/adr/0002-delta-vs-iceberg.md): one open table format with safe updates, with an interop path to Iceberg for other engines.
 - [ADR-0003 Portable core, native edges](docs/adr/0003-cloud-agnostic-boundary.md): pipeline logic is identical on AWS and Azure; only thin storage and identity layers differ.
 - [ADR-0004 Streaming contract](docs/adr/0004-streaming-contract-format.md): events are checked against a versioned schema, using plain JSON so they stay readable and replayable.
+- [ADR-0005 Keyed identifier tokens](docs/adr/0005-keyed-tokens-for-identifiers.md): member and provider ids are keyed HMAC tokens, because an unkeyed hash of a sequential id can be reversed by enumeration.
+
+All records: [docs/adr](docs/adr/README.md).
 
 ## License
 

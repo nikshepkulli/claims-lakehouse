@@ -18,6 +18,12 @@ Start with the [README](../README.md) for the overview. Terms are explained in t
 | Silver | [silver.md](silver.md) |
 | Gold | [gold.md](gold.md) |
 | Orchestration | [orchestration.md](orchestration.md) |
+| Data quality (Great Expectations) | [data-quality.md](data-quality.md) |
+| Observability | [observability.md](observability.md) |
+| Features | [features.md](features.md) |
+| Governed Q&A (GenAI) | [genai.md](genai.md) |
+| Databricks bundle | [databricks.md](databricks.md) |
+| Dashboard | [dashboard.md](dashboard.md) |
 | Streaming | [streaming.md](streaming.md), [streaming-spark.md](streaming-spark.md) |
 | dbt and analytics | [dbt.md](dbt.md), [analytics-guide.md](analytics-guide.md) |
 | Snowflake | [snowflake.md](snowflake.md) |
@@ -34,4 +40,4 @@ Start with the [README](../README.md) for the overview. Terms are explained in t
 
 ## Decision records
 
-[ADR index](adr/README.md): [0001 medallion](adr/0001-medallion-layout.md), [0002 Delta](adr/0002-delta-vs-iceberg.md), [0003 cloud boundary](adr/0003-cloud-agnostic-boundary.md), [0004 streaming contract](adr/0004-streaming-contract-format.md).
+[ADR index](adr/README.md): [0001 medallion](adr/0001-medallion-layout.md), [0002 Delta](adr/0002-delta-vs-iceberg.md), [0003 cloud boundary](adr/0003-cloud-agnostic-boundary.md), [0004 streaming contract](adr/0004-streaming-contract-format.md), [0005 keyed tokens](adr/0005-keyed-tokens-for-identifiers.md).
