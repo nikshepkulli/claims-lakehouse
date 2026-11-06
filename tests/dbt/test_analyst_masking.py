@@ -41,6 +41,12 @@ def con():
         )
         counts = fixture.build(raw, out)
         c = duckdb.connect()
+        # The SOURCE ids (never present in gold since #71): used to prove none leaks into it.
+        c.execute(
+            "CREATE TABLE source_ids AS "
+            f"SELECT member_id AS id FROM read_parquet('{fixture._glob(raw, 'members')}') "
+            f"UNION SELECT provider_id FROM read_parquet('{fixture._glob(raw, 'providers')}')"
+        )
         for table in counts:
             c.execute(
                 f"CREATE TABLE {table} AS SELECT * FROM read_parquet('{out / table}/*.parquet')"
@@ -70,10 +76,13 @@ def all_strings(con, relation: str) -> list[str]:
     return out
 
 
-def test_control_raw_tables_do_contain_identifiers(con):
-    """Guards the test itself: the detector must find ids when they are there."""
-    assert any(RAW_ID.search(s) for s in all_strings(con, "dim_member"))
-    assert any(RAW_ID.search(s) for s in all_strings(con, "dim_provider"))
+def test_control_detector_finds_source_ids_when_they_are_there(con):
+    """Guards the test itself: the detector must find ids when they are there. Gold holds only
+    keyed tokens since #71, so the control is the SOURCE id list, not a gold table."""
+    ids = [r[0] for r in con.execute("SELECT id FROM source_ids").fetchall()]
+    assert len(ids) > 100 and all(RAW_ID.fullmatch(i) for i in ids)
+    assert RAW_ID.search("see member M000000042 here")
+    assert not any(RAW_ID.search(s) for s in all_strings(con, "dim_member"))
 
 
 @pytest.mark.parametrize("table", GOLD)
@@ -83,8 +92,7 @@ def test_no_raw_member_or_provider_id_in_any_analyst_cell(con, table):
 
 
 def test_raw_id_values_do_not_appear_even_as_substrings(con):
-    raw = {r[0] for r in con.execute("SELECT member_id FROM dim_member").fetchall()}
-    raw |= {r[0] for r in con.execute("SELECT provider_id FROM dim_provider").fetchall()}
+    raw = {r[0] for r in con.execute("SELECT id FROM source_ids").fetchall()}
     blob = "\n".join(
         s for t in GOLD for s in all_strings(con, f"analyst_{t}")
     )  # concatenated: substring, not equality
@@ -93,14 +101,15 @@ def test_raw_id_values_do_not_appear_even_as_substrings(con):
     assert not leaked, leaked[:5]
 
 
-def test_identifiers_are_hashed_stable_and_still_joinable(con):
+def test_identifiers_are_keyed_tokens_stable_and_still_joinable(con):
     n_raw, n_hash = con.execute(
         "SELECT count(DISTINCT member_id),"
         " (SELECT count(DISTINCT member_id) FROM analyst_dim_member) FROM dim_member"
     ).fetchone()
     assert n_raw == n_hash > 0  # injective: no collisions, so counts and joins are preserved
     ids = [r[0] for r in con.execute("SELECT member_id FROM analyst_dim_member").fetchall()]
-    assert all(re.fullmatch(r"[0-9a-f]{64}", i) for i in ids)
+    # keyed HMAC token (ticket #71), shown as stored: no unkeyed SHA-256 of an id anywhere
+    assert all(re.fullmatch(r"tok_[a-z0-9]{1,8}_[0-9a-f]{32}", i) for i in ids)
     # hashing is deterministic across the dimension and its SCD2 versions
     versions = con.execute(
         "SELECT count(*) FROM"

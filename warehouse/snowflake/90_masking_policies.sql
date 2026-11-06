@@ -16,23 +16,27 @@
 --
 -- Design:
 --   * Two tags. DATA_CLASSIFICATION (PUBLIC..PHI_LIKE) is for discovery and audit only.
---     PRIVACY_HANDLING (HASH, MASK, GENERALISE, DROP) carries the masking policies, so
+--     PRIVACY_HANDLING (MASK, GENERALISE, DROP) carries the masking policies, so
 --     tagging a column is what protects it, with no per-column policy wiring.
 --   * One policy per data type, bound to the tag. The body branches on the column's tag
---     value, so a new HASH column is protected the moment it is tagged.
+--     value, so a new MASK column is protected the moment it is tagged.
 --   * Raw values only for the TRANSFORMER role, because its MERGE/dbt jobs must compare and
 --     rebuild identifiers. LOADER cannot read MARTS at all; ANALYST and everyone else get the
 --     masked value. A break-glass PII_READER role is designed, not built (see the docs).
 --   * Fail closed: there is no ELSE branch, so an unknown tag value, or DROP, returns NULL.
---   * HASH is SHA-256 WITHOUT a key, so it is joinable but can be reversed by enumerating
---     sequential ids. Keyed pseudonymisation happens before load (lakehouse.governance).
+--   * There is NO hash handling (ticket #71). Ids are sequential (M000000001), so SHA2() of
+--     them is reversible by enumeration. member_id / provider_id arrive already tokenised by
+--     the gold job with a keyed HMAC (lakehouse.governance.tokenise, key outside Snowflake),
+--     are registry handling `token`, and are therefore not tagged or masked here: the stored
+--     value is the pseudonym. Snowflake never sees the key. HASH() in 30/31_merge_*.sql is
+--     row change detection inside the MERGE only, its output is never stored or exposed.
 
 USE SCHEMA secure;
 
 CREATE TAG IF NOT EXISTS data_classification ALLOWED_VALUES 'PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'PHI_LIKE'
 COMMENT = 'Data classification of a column, from governance/data_classification.yaml.';
 
-CREATE TAG IF NOT EXISTS privacy_handling ALLOWED_VALUES 'HASH', 'MASK', 'GENERALISE', 'DROP'
+CREATE TAG IF NOT EXISTS privacy_handling ALLOWED_VALUES 'MASK', 'GENERALISE', 'DROP'
 COMMENT = 'Handling for non-privileged readers; masking policies are bound to this tag.';
 
 -- Linter note: sqlfluff 3.3 cannot parse the SYSTEM$GET_TAG_ON_CURRENT_COLUMN function name and
@@ -45,10 +49,9 @@ CREATE MASKING POLICY IF NOT EXISTS mp_privacy_varchar AS (val VARCHAR) RETURNS 
 CASE
     WHEN IS_ROLE_IN_SESSION('CLAIMS_DEV_TRANSFORMER') THEN val
     WHEN val IS NULL THEN NULL
-    WHEN SYSTEM$GET_TAG_ON_CURRENT_COLUMN('CLAIMS_DEV.SECURE.PRIVACY_HANDLING') = 'HASH' THEN SHA2(val, 256)
     WHEN SYSTEM$GET_TAG_ON_CURRENT_COLUMN('CLAIMS_DEV.SECURE.PRIVACY_HANDLING') = 'MASK' THEN CONCAT(REPEAT('*', GREATEST(LENGTH(val) - 2, 0)), RIGHT(val, 2))
 END
-COMMENT = 'Tag-based masking for VARCHAR: HASH, MASK, else NULL. Raw for TRANSFORMER only.';
+COMMENT = 'Tag-based masking for VARCHAR: MASK, else NULL. Raw for TRANSFORMER only.';
 
 CREATE MASKING POLICY IF NOT EXISTS mp_privacy_number AS (val NUMBER) RETURNS NUMBER ->
 CASE

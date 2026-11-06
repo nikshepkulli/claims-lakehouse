@@ -29,7 +29,7 @@ resource "snowflake_masking_policy" "privacy_varchar" {
   schema           = snowflake_schema.this["SECURE"].name
   name             = "MP_PRIVACY_VARCHAR"
   return_data_type = "VARCHAR"
-  comment          = "Tag-based masking for VARCHAR: HASH, MASK, else NULL. Raw for TRANSFORMER only."
+  comment          = "Tag-based masking for VARCHAR: MASK, else NULL. Raw for TRANSFORMER only."
 
   argument {
     name = "val"
@@ -40,7 +40,6 @@ resource "snowflake_masking_policy" "privacy_varchar" {
     CASE
         WHEN IS_ROLE_IN_SESSION('${local.role_prefix}_TRANSFORMER') THEN val
         WHEN val IS NULL THEN NULL
-        WHEN SYSTEM$GET_TAG_ON_CURRENT_COLUMN('${local.privacy_tag_ref}') = 'HASH' THEN SHA2(val, 256)
         WHEN SYSTEM$GET_TAG_ON_CURRENT_COLUMN('${local.privacy_tag_ref}') = 'MASK' THEN CONCAT(REPEAT('*', GREATEST(LENGTH(val) - 2, 0)), RIGHT(val, 2))
     END
   EOT
@@ -113,7 +112,7 @@ resource "snowflake_tag" "privacy_handling" {
   database               = snowflake_database.this.name
   schema                 = snowflake_schema.this["SECURE"].name
   name                   = "PRIVACY_HANDLING"
-  ordered_allowed_values = ["HASH", "MASK", "GENERALISE", "DROP"]
+  ordered_allowed_values = ["MASK", "GENERALISE", "DROP"]
   comment                = "Handling for non-privileged readers; masking policies are bound to this tag."
   masking_policies = [
     snowflake_masking_policy.privacy_varchar[0].fully_qualified_name,

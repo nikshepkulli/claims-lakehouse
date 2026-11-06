@@ -121,7 +121,7 @@ Record the outcome of the first live run in #15 and in `docs/snowflake.md`.
 
 ## Privacy of the marts
 
-Every mart column is classified in `governance/data_classification.yaml`; `mart_member_risk.member_id` and `mart_provider_performance.provider_id` are hashed for analysts and birth year, age and dates are generalised. `tests/governance` fails if a mart column is added without a registry entry, and `tests/dbt/test_analyst_masking.py` proves on DuckDB that the analyst-facing views return no raw identifiers. On Snowflake, dbt rebuilds marts with `CREATE OR REPLACE`, which drops column tags, so run `warehouse/snowflake/92_apply_tags_marts.sql` after every `dbt build` (until then the marts are unprotected). Details and the unexecuted status: [privacy-and-access.md](privacy-and-access.md).
+Every mart column is classified in `governance/data_classification.yaml`; `mart_member_risk.member_id` and `mart_provider_performance.provider_id` are keyed HMAC tokens already in gold (shown as stored to every role, ticket #71; the fixture and the Spark gold tokenise the same way, the fixture with a fake test key) and birth year, age and dates are generalised. `tests/governance` fails if a mart column is added without a registry entry, and `tests/dbt/test_analyst_masking.py` proves on DuckDB that the analyst-facing views return no raw identifiers and that no gold cell holds a source id or an unkeyed hash of one. On Snowflake, dbt rebuilds marts with `CREATE OR REPLACE`, which drops column tags, so run `warehouse/snowflake/92_apply_tags_marts.sql` after every `dbt build` (until then the marts are unprotected). Details and the unexecuted status: [privacy-and-access.md](privacy-and-access.md).
 
 ## Linting
 

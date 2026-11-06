@@ -8,6 +8,7 @@ reconciliation tests run the real ``gold_batch`` on hand-built silver Delta tabl
 """
 
 import hashlib
+import os
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -24,6 +25,7 @@ from lakehouse.gold.dims import diagnosis_rows, ensure_dim_date, merge_diagnosis
 from lakehouse.gold.job import ReconciliationError, gold_batch  # noqa: E402
 from lakehouse.gold.scd2 import MEMBER, PROVIDER, scd2_merge  # noqa: E402
 from lakehouse.gold.schema import EPOCH  # noqa: E402
+from lakehouse.governance.tokenise import Tokeniser  # noqa: E402
 
 pytestmark = pytest.mark.spark
 
@@ -50,8 +52,19 @@ LIN = (
 DX = "claim_id string, dx_seq int, icd10_code string, diagnosis_type string"
 
 
+def tok(raw_id, domain):
+    """Python mirror of the gold identifier token: keyed HMAC with the suite's TEST-ONLY key."""
+    return Tokeniser(os.environ["LAKEHOUSE_PSEUDONYM_KEY"], "v1").token(raw_id, domain)
+
+
 def sk(kind, *parts):
-    """Python mirror of lakehouse.gold.keys.derive_sk, written from the documented scheme."""
+    """Python mirror of lakehouse.gold.keys.derive_sk, written from the documented scheme.
+
+    For member / provider the first part is the SOURCE id; the scheme hashes its keyed token.
+    """
+    parts = list(parts)
+    if kind in ("member", "provider"):
+        parts[0] = tok(parts[0], kind)
     return hashlib.sha256("|".join([f"{kind}:v1", *map(str, parts)]).encode()).hexdigest()
 
 
@@ -106,7 +119,7 @@ def versions(spark, gold, mid):
     return [
         r.asDict()
         for r in tbl(spark, gold, "dim_member")
-        .where(F.col("member_id") == mid)
+        .where(F.col("member_id") == tok(mid, "member"))
         .orderBy("effective_from")
         .collect()
     ]
@@ -137,12 +150,13 @@ def test_surrogate_keys_follow_the_documented_scheme(spark, lake):
 
 
 def test_key_derivation_is_isolated_in_keys_module():
-    """Ticket #71 swaps the digest for a keyed HMAC: nobody else may mint keys."""
+    """Ticket #71: keys and identifier tokens are minted in keys.py only (keyed HMAC for ids)."""
     from pathlib import Path
 
     for f in Path(job.__file__).parent.glob("*.py"):
         text = f.read_text()
         assert "md5(" not in text, f.name
+        assert "hashlib" not in text or f.name == "keys.py", f.name
         if f.name not in ("keys.py", "scd2.py"):  # scd2.py hashes attributes (record_hash) only
             assert "sha2(" not in text, f"{f.name} derives a key outside keys.py"
 
@@ -165,7 +179,7 @@ def test_changed_second_snapshot_closes_old_and_opens_new_version(spark, lake):
     merge_members(spark, gold, D1, [member("M1", "HMO"), member("M2", "PPO")])
     r = merge_members(spark, gold, D2, [member("M1", "PPO"), member("M2", "PPO")], RUN2)
     assert (r.versions_inserted, r.versions_updated, r.versions_removed) == (1, 1, 0)
-    assert [x[0] for x in r.changed_keys.collect()] == ["M1"]  # only M1's history moved
+    assert [x[0] for x in r.changed_keys.collect()] == [tok("M1", "member")]  # only M1 moved
     v1, v2 = versions(spark, gold, "M1")
     assert (v1["plan_type"], v1["effective_from"], v1["effective_to"], v1["is_current"]) == (
         "HMO",

@@ -13,6 +13,12 @@ import pytest  # noqa: E402
 os.environ.setdefault("PYSPARK_SUBMIT_ARGS", "--driver-memory 3g pyspark-shell")
 
 
+# TEST-ONLY pseudonymisation key (ticket #71): fake, public, protects nothing. Gold refuses to run
+# without LAKEHOUSE_PSEUDONYM_KEY, so the suites set it. A real key is never put in the repo.
+GOLD_TEST_KEY = "GOLD-TESTS-ONLY-NOT-A-SECRET-0123456789"
+os.environ.setdefault("LAKEHOUSE_PSEUDONYM_KEY", GOLD_TEST_KEY)  # CI e2e sets the same one
+
+
 @pytest.fixture(scope="module")
 def spark(tmp_path_factory):
     """One Delta-enabled local SparkSession per test module (same pattern as tests/silver).

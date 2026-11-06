@@ -36,6 +36,7 @@ from lakehouse.silver.paths import table_uri as silver_uri
 
 from .dims import diagnosis_rows, ensure_dim_date, merge_diagnosis
 from .facts import UNRESOLVED, build_facts, resolve_dimensions
+from .keys import natural_id
 from .paths import EXCLUSIONS, RECONCILIATION, export_uri, table_uri
 from .scd2 import MEMBER, PROVIDER, DimSpec, ScdResult, scd2_merge, scd2_violations, typed_snapshot
 from .schema import EXCLUSION_COLS, MIN_VACUUM_HOURS, RECONCILIATION_COLS, TABLES
@@ -169,14 +170,18 @@ def rekey_facts(
     if not exists(spark, claims_uri):
         return 0
     claims = read(spark, claims_uri).select("claim_id", "member_id", "provider_id", "service_date")
+    # changed_* hold gold identifiers (tokens), so compare against tokenised claim ids.
+    claims = claims.withColumn("_m_tok", natural_id(F.col("member_id"), "member")).withColumn(
+        "_p_tok", natural_id(F.col("provider_id"), "provider")
+    )
     flag = F.lit(False)
     if changed_members is not None:
         cm = changed_members.select(F.col("member_id").alias("_cm_id")).distinct()
-        claims = claims.join(cm, F.col("member_id") == F.col("_cm_id"), "left")
+        claims = claims.join(cm, F.col("_m_tok") == F.col("_cm_id"), "left")
         flag = flag | F.col("_cm_id").isNotNull()
     if changed_providers is not None:
         cp = changed_providers.select(F.col("provider_id").alias("_cp_id")).distinct()
-        claims = claims.join(cp, F.col("provider_id") == F.col("_cp_id"), "left")
+        claims = claims.join(cp, F.col("_p_tok") == F.col("_cp_id"), "left")
         flag = flag | F.col("_cp_id").isNotNull()
     claims = claims.where(flag).dropDuplicates(["claim_id"])
     fixed = resolve_dimensions(

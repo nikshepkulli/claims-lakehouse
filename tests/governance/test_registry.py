@@ -67,9 +67,9 @@ def test_identifier_columns_are_never_shown_raw(reg):
     for t in reg.values():
         for c in t.columns.values():
             if c.identifier == "direct":
-                assert c.handling in {"hash", "mask", "drop"}, f"{t.name}.{c.name}"
+                assert c.handling in {"token", "mask", "drop"}, f"{t.name}.{c.name}"
             if c.name in {"member_id", "provider_id"}:
-                assert c.handling == "hash", f"{t.name}.{c.name}"
+                assert c.handling == "token", f"{t.name}.{c.name}"
 
 
 def test_sensitive_columns_left_as_is_carry_a_justification(reg):
@@ -91,8 +91,26 @@ def test_birth_year_and_dates_of_birth_like_columns_are_generalised(reg):
         assert reg[t].columns[c].handling == "generalise", f"{t}.{c}"
 
 
+def test_no_column_uses_an_unkeyed_hash_handling(reg):
+    """Ticket #71: ids are sequential, so an unkeyed hash is reversible. The vocabulary has no
+    `hash`; identifiers are keyed tokens made upstream."""
+    assert "hash" not in registry.HANDLINGS
+    for t in reg.values():
+        for c in t.columns.values():
+            if c.handling == "token":
+                assert "keyed" in c.justification.lower(), f"{t.name}.{c.name}"
+
+
+def test_surrogate_key_decisions_are_recorded(reg):
+    """Per-column key decisions (#71): member/provider sks are keyed-derived, diagnosis_sk is
+    an unkeyed hash of a PUBLIC code and says so."""
+    for t, c in [("dim_member", "member_sk"), ("dim_provider", "provider_sk")]:
+        assert "keyed id token" in reg[t].columns[c].justification
+    assert reg["dim_diagnosis"].columns["diagnosis_sk"].classification == "PUBLIC"
+
+
 def test_record_hash_of_member_attributes_is_dropped(reg):
-    """md5 over (birth_year, sex, state, plan_type) is brute-forceable back to birth_year."""
+    """sha256 over (birth_year, sex, state, plan_type) is brute-forceable back to birth_year."""
     assert reg["dim_member"].columns["record_hash"].handling == "drop"
 
 

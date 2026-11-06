@@ -217,7 +217,7 @@ def typed_snapshot(df: DataFrame, spec: DimSpec) -> DataFrame:
     """Key + tracked attributes cast to gold types, plus ``record_hash`` over the typed values."""
     types = {c.name: c.type for c in TABLES[spec.table]}
     return df.select(
-        natural_id(F.col(spec.key)).alias(spec.key),
+        natural_id(F.col(spec.key), spec.kind).alias(spec.key),
         *[F.col(a).cast(types[a]).alias(a) for a in spec.attrs],
     ).withColumn("record_hash", record_hash(spec))
 

@@ -52,7 +52,7 @@ def render(tables: dict[str, Table], layer: str) -> str:
         out.append(f"\n-- {table.name}\n")
         for col in table.columns.values():
             tags = [("data_classification", col.classification)]
-            if col.handling != "none":
+            if col.handling not in ("none", "token"):  # token: stored value is already keyed
                 tags.append(("privacy_handling", col.handling.upper()))
             for tag, value in tags:
                 out.append(

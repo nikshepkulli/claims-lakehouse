@@ -30,9 +30,12 @@ COMMENT = 'Calendar dimension, one row per day. date_key is YYYYMMDD. Synthetic-
 
 -- SCD2: one row per member version. member_sk is the surrogate key assigned in
 -- the gold layer (not by Snowflake) so Delta and Snowflake agree on keys.
+-- member_id / provider_id hold keyed HMAC tokens, tok_<key_id>_<32 hex> (ticket #71,
+-- lakehouse.governance.tokenise), NOT the source ids; VARCHAR(48) fits an 8-char key id.
+-- member_sk / provider_sk are sha256 over (kind, token, effective_from), so they are keyed too.
 CREATE TABLE IF NOT EXISTS dim_member (
     member_sk VARCHAR(64) NOT NULL,
-    member_id VARCHAR(10) NOT NULL,
+    member_id VARCHAR(48) NOT NULL,
     birth_year SMALLINT,
     sex VARCHAR(1),
     state VARCHAR(2),
@@ -46,11 +49,11 @@ CREATE TABLE IF NOT EXISTS dim_member (
     loaded_at TIMESTAMP_NTZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
     CONSTRAINT pk_dim_member PRIMARY KEY (member_sk)
 )
-COMMENT = 'Member dimension, SCD type 2 (effective_from/effective_to/is_current). Fabricated ids only, no real PHI. Masking: ticket #25.';
+COMMENT = 'Member dimension, SCD type 2 (effective_from/effective_to/is_current). member_id is a keyed token (ticket #71). Fabricated data only, no real PHI. Masking: ticket #25.';
 
 CREATE TABLE IF NOT EXISTS dim_provider (
     provider_sk VARCHAR(64) NOT NULL,
-    provider_id VARCHAR(10) NOT NULL,
+    provider_id VARCHAR(48) NOT NULL,
     specialty VARCHAR(60),
     state VARCHAR(2),
     network_status VARCHAR(20),
@@ -63,7 +66,7 @@ CREATE TABLE IF NOT EXISTS dim_provider (
     loaded_at TIMESTAMP_NTZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
     CONSTRAINT pk_dim_provider PRIMARY KEY (provider_sk)
 )
-COMMENT = 'Provider dimension, SCD type 2. cost_tier is STANDARD, ELEVATED or HIGH_COST. Synthetic data.';
+COMMENT = 'Provider dimension, SCD type 2. provider_id is a keyed token (ticket #71). cost_tier is STANDARD, ELEVATED or HIGH_COST. Synthetic data.';
 
 CREATE TABLE IF NOT EXISTS dim_diagnosis (
     diagnosis_sk VARCHAR(64) NOT NULL,

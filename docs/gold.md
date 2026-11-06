@@ -1,6 +1,6 @@
 # Gold layer
 
-Ticket #8. Turns [silver](silver.md) Delta tables into a **Kimball star schema** for BI: two facts, four dimensions (member and provider are SCD2), deterministic surrogate keys, a reconciliation of every number back to silver, and a Parquet export that Snowflake and dbt load. Code: `src/lakehouse/gold/`. Design context: [ADR-0001](adr/0001-medallion-layout.md) (gold = conformed, business-ready), [ADR-0002](adr/0002-delta-vs-iceberg.md), [ADR-0003](adr/0003-cloud-agnostic-boundary.md).
+Ticket #8. Turns [silver](silver.md) Delta tables into a **Kimball star schema** for BI: two facts, four dimensions (member and provider are SCD2), keyed identifier tokens, deterministic surrogate keys, a reconciliation of every number back to silver, and a Parquet export that Snowflake and dbt load. Code: `src/lakehouse/gold/`. Design context: [ADR-0001](adr/0001-medallion-layout.md) (gold = conformed, business-ready), [ADR-0002](adr/0002-delta-vs-iceberg.md), [ADR-0003](adr/0003-cloud-agnostic-boundary.md).
 
 The column names and types are a **contract**: they equal `warehouse/snowflake/01_gold_ddl.sql` ([snowflake.md](snowflake.md)) exactly, and the [dbt project](dbt.md) is written against it. A test parses the DDL and fails if either side drifts.
 
@@ -17,8 +17,8 @@ erDiagram
     FACT_CLAIM   ||--|{ FACT_CLAIM_LINE : claim_id
     DIM_DATE     ||--o{ FACT_CLAIM_LINE : service_date_key
 
-    DIM_MEMBER { string member_sk PK "sha256 of member+effective_from"
-                 string member_id "natural key, repeats per version"
+    DIM_MEMBER { string member_sk PK "sha256 of kind + id token + effective_from"
+                 string member_id "keyed token, repeats per version"
                  smallint birth_year
                  string sex
                  string state
@@ -90,23 +90,28 @@ Amounts are `DECIMAL(12,2)`. Sums over many rows are widened (`decimal(22,2)`) i
 
 The fact tables hold only what silver trusts: claims and lines in `silver_quarantine` (including orphan members and children of a quarantined claim) are not in silver, so they cannot be in gold. Gold never reads the quarantine table as data.
 
-## Key scheme
+## Key scheme and identifier tokens
 
-All keys are minted in **one module**, `keys.py` (`derive_sk`, plus `natural_id` for how a source id appears in gold):
+All keys and identifier tokens are minted in **one module**, `keys.py` (`natural_id`, `derive_sk`). Ticket #71: gold no longer carries the source ids.
 
 ```
-sk = sha256_hex( "<kind>:v1" | part1 | part2 | ... )          64 hex chars, fits VARCHAR(64)
+member_id / provider_id (gold) = tok_<key_id>_<32 hex>   HMAC-SHA256 over "<domain>\0<source id>", key from env
+sk = sha256_hex( "<kind>:v1" | part1 | part2 | ... )     64 hex chars, fits VARCHAR(64)
 
-dim_member.member_sk       = derive_sk("member",    member_id,    effective_from)
-dim_provider.provider_sk   = derive_sk("provider",  provider_id,  effective_from)
+dim_member.member_sk       = derive_sk("member",    natural_id(member_id, "member"),     effective_from)
+dim_provider.provider_sk   = derive_sk("provider",  natural_id(provider_id, "provider"), effective_from)
 dim_diagnosis.diagnosis_sk = derive_sk("diagnosis", icd10_code)
 ```
 
-- **Deterministic.** A key is a pure function of the natural key and, for SCD2, the version's start. Re-running, replaying on another machine, or reloading Snowflake re-derives the same keys; a fact needs no lookup table to find its dimension row. Timestamps render as `yyyy-MM-dd HH:mm:ss` (`tests/gold` reproduces keys with `hashlib` from this description).
-- **Stable across history edits.** A version keeps its key as long as its `effective_from` does, so appending a version or closing one never re-keys older facts.
-- **Facts** keep their business keys (`claim_id`, `line_id`) as primary keys.
-- **Ticket #71** moves identifier tokenisation to a keyed HMAC (key held outside the data). That must be a one-function change: `derive_sk` swaps the digest and `natural_id` swaps the identifier. A test fails if any other gold module calls `sha2`/`md5` to make a key (`scd2.py` hashes attribute values for `record_hash`, which is not an identifier).
-- The synthetic ids (`M000000001`, `PRV0000001`) are already fabricated, so `natural_id` is the identity today.
+- **Tokens are keyed.** The source ids are sequential (`M000000001`), so an unkeyed hash is reversible by enumeration. The HMAC key comes from `LAKEHOUSE_PSEUDONYM_KEY` (`LAKEHOUSE_PSEUDONYM_KEY_ID` names its generation, default `v1`); the gold CLI fails fast with `MissingKeyError` if it is missing, and the key is in no file, table or log. DDL: `member_id`/`provider_id` are `VARCHAR(48)` (a token is at most 45 chars). Details, rotation runbook and limitations: [privacy-and-access.md](privacy-and-access.md).
+- **Surrogate keys are derived from the token**, so they are not enumerable without the key either. `diagnosis_sk` hashes a public ICD-10 code and stays unkeyed on purpose (non-sensitive; recorded in the classification registry together with the other per-column decisions).
+- **Deterministic.** A key is a pure function of the id, the pseudonym key and, for SCD2, the version's start. Re-running with the same key re-derives the same tokens and keys byte for byte (idempotent gold, tested), so a fact needs no lookup table to find its dimension row. Timestamps render as `yyyy-MM-dd HH:mm:ss` (tests reproduce keys with `hashlib` and `Tokeniser`).
+- **Key rotation rebuilds gold.** A new key changes every token and therefore every member/provider SK; the token carries its key id (`tok_v2_...`) so mixed generations are detectable. Rebuild from silver into a new root, see the runbook in [privacy-and-access.md](privacy-and-access.md#key-management-and-rotation-runbook).
+- **Stable across history edits.** A version keeps its key as long as its `effective_from` (and the pseudonym key) does, so appending a version or closing one never re-keys older facts.
+- **Facts** keep their business keys (`claim_id`, `line_id`) as primary keys; they are opaque synthetic ids, not tokenised (listed under limitations).
+- A test fails if any other gold module calls `sha2`/`md5` to make a key (`scd2.py` hashes attribute values for `record_hash`, which is not an identifier and is deliberately key-independent: rotation must not churn SCD2 history).
+- **Spark mechanics.** Spark has no HMAC, so `natural_id` is a Python UDF over `Tokeniser.token_fn`, a closure of key bytes and stdlib calls (workers need no project code). It is applied before joins (a Python UDF cannot sit in a join condition). The key is therefore inside the task closure; see the limitations table. `gold_exclusions.reason_detail` carries tokens, not source ids.
+- Running: `export LAKEHOUSE_PSEUDONYM_KEY=...` before `make gold` (the target checks). `make pipeline-e2e` and the `pipeline e2e` CI job use a fake, public, test-only key because their data is synthetic.
 
 ## SCD2 rules (`scd2.py`)
 
@@ -212,6 +217,7 @@ Roots are plain URIs (`/path`, `file://`, `s3a://bucket/prefix`), built in `lake
 ## Tests
 
 - `tests/gold/test_gold_ddl_contract.py`, `test_gold_cli.py` (plain pytest, run in the normal `pytest` job): the in-code schema equals the parsed Snowflake DDL (names, order, types, nullability); CLI argument handling; repo wiring.
-- `tests/gold/test_gold_scd2_spark.py` (`-m spark`, job `spark tests (gold)`): key scheme vs a `hashlib` mirror; SCD2 first load, changed second snapshot, idempotent re-run and out-of-order replay, late-arriving snapshot, in-place correction, collapse, NULL vs `''`, duplicate-key rejection (hand-built snapshots, merge called directly); as-of fact resolution; fact re-key after a late snapshot; held-back claims with exact reconciled sums; unresolved dimension fails loudly (also through the CLI: exit 1, no export); a lossy writer breaks the reconciliation; `dim_date`; `dim_diagnosis`; OPTIMIZE/VACUUM.
-- `tests/gold/test_gold_pipeline_spark.py` (`-m spark`): checks on the real claimsgen -> bronze -> silver -> gold output. They need the output of the three layers, so they are **skipped unless `GOLD_E2E_DIR` is set** and run in the `pipeline e2e` job: the Delta tables the job wrote equal the DDL, values fit the `VARCHAR(n)` limits, independent re-computation of rows and sums, quarantined/orphan rows absent, FK integrity, header = sum of lines, re-running every batch changes nothing, and the Parquet export equals the Delta tables and the DDL types.
+- `tests/gold/test_gold_keyed_spark.py` (`-m spark`, #71): same key gives identical tokens and keys across runs and a re-run changes nothing; a different key changes every token and SK; no source id or unkeyed MD5/SHA-256 of one in any gold cell; exclusions detail holds tokens; a key rotation rebuild writes only the new key id while old tokens verify; a missing key fails before any write.
+- `tests/gold/test_gold_scd2_spark.py` (`-m spark`, job `spark tests (gold)`): key scheme vs a `hashlib`/`Tokeniser` mirror; SCD2 first load, changed second snapshot, idempotent re-run and out-of-order replay, late-arriving snapshot, in-place correction, collapse, NULL vs `''`, duplicate-key rejection (hand-built snapshots, merge called directly); as-of fact resolution; fact re-key after a late snapshot; held-back claims with exact reconciled sums; unresolved dimension fails loudly (also through the CLI: exit 1, no export); a lossy writer breaks the reconciliation; `dim_date`; `dim_diagnosis`; OPTIMIZE/VACUUM.
+- `tests/gold/test_gold_pipeline_spark.py` (`-m spark`): checks on the real claimsgen -> bronze -> silver -> gold output. They need the output of the three layers, so they are **skipped unless `GOLD_E2E_DIR` is set** and run in the `pipeline e2e` job: the Delta tables the job wrote equal the DDL, values fit the `VARCHAR(n)` limits, independent re-computation of rows and sums, tokens equal the configured key's tokens of the silver ids and no source id or unkeyed digest appears in any gold table or the export, quarantined/orphan rows absent, FK integrity, header = sum of lines, re-running every batch changes nothing, and the Parquet export equals the Delta tables and the DDL types.
 - CI: **`pipeline e2e`** ([ci.md](ci.md)) runs claimsgen (2000 claims) -> bronze -> silver -> gold (the CLI, so a failed reconciliation fails the step), then `dbt build --target duckdb` on the real export (any failing dbt test fails the job), then the end-to-end checks above.

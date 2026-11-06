@@ -14,3 +14,4 @@ Open-source portfolio project by Nikshep Kulli: a multi-cloud lakehouse on synth
 ## Running log
 
 - 2026-11-05: repo created, 32 tickets across 8 milestones filed; scaffold PR for #1.
+- 2026-11-06: #71 keyed tokens. Gold `member_id`/`provider_id` are HMAC tokens `tok_<key_id>_<hex>` (key from `LAKEHOUSE_PSEUDONYM_KEY`; gold CLI fails without it; CI e2e/`make pipeline-e2e` use a fake test key). Registry handling `hash` replaced by `token`; no SHA2 in Snowflake policies. Rotation = rebuild gold from silver (runbook in docs/privacy-and-access.md). Python workers cannot import `lakehouse` in plain `pytest` (sys.path only) - UDFs must stay self-contained (`Tokeniser.token_fn`).

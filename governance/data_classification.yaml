@@ -23,11 +23,18 @@
 # handling (rule for readers WITHOUT the unmasked privilege; the transformer role sees raw):
 #   none        shown as stored. A justification is REQUIRED when the column is direct/quasi
 #               or PHI_LIKE
-#   hash        SHA-256 hex (Snowflake: SHA2(val, 256), unkeyed; portable: keyed HMAC in
-#               lakehouse.governance.tokenise). Stable, so joins on the hashed value still work
+#   token       the STORED value is already a keyed HMAC-SHA256 token (tok_<key_id>_<hex>,
+#               lakehouse.governance.tokenise, produced by the gold job; ticket #71). Shown as
+#               stored to every role, stable so joins work. There is deliberately no unkeyed
+#               SHA-256 handling: ids are sequential, so an unkeyed hash is reversible.
+#               Needs a justification
 #   mask        partial mask, keep the last two characters
 #   generalise  integers -> 5-year bucket start, dates -> first day of the year
 #   drop        returns NULL (or the column is removed from analyst views)
+# Per-column key decisions (ticket #71): identifiers (member_id, provider_id) = keyed tokens;
+# member_sk / provider_sk = sha256 over the keyed token (opaque, rotates with the key);
+# diagnosis_sk = unkeyed sha256 of a public ICD-10 code (non-sensitive); dim_member.record_hash
+# = unkeyed sha256 of low-entropy attributes, so it is dropped for analysts and never an id.
 # layer: gold = Snowflake DDL table, mart = dbt mart (columns follow the dbt YAML names).
 
 version: 1
@@ -47,8 +54,8 @@ tables:
   dim_member:
     layer: gold
     columns:
-      member_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins; carries no attribute of the person. Unkeyed md5 in the fixture: production gold must use keyed tokenisation (lakehouse.governance)'}
-      member_id: {classification: PHI_LIKE, identifier: direct, handling: hash}
+      member_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins: sha256 over (kind, keyed id token, effective_from), so it cannot be enumerated back to an id without the pseudonym key (ticket #71, gold/keys.py). Carries no attribute of the person. Changes on key rotation (full rebuild)'}
+      member_id: {classification: PHI_LIKE, identifier: direct, handling: token, justification: 'Gold stores a keyed HMAC-SHA256 token (tok_<key_id>_<hex>, lakehouse.governance.tokenise), never the source id; the key lives outside the repo and data (ticket #71). Stable per key, so joins still work'}
       birth_year: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
       sex: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: 'Two-value attribute needed for risk stratification; protected by role and row access, not by transformation'}
       state: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: State-level geography is the coarsest HIPAA Safe Harbor unit; further restricted by the row access policy}
@@ -63,8 +70,8 @@ tables:
   dim_provider:
     layer: gold
     columns:
-      provider_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins; carries no attribute of the person. Unkeyed md5 in the fixture: production gold must use keyed tokenisation (lakehouse.governance)'}
-      provider_id: {classification: CONFIDENTIAL, identifier: direct, handling: hash}
+      provider_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins: sha256 over (kind, keyed id token, effective_from), so it cannot be enumerated back to an id without the pseudonym key (ticket #71, gold/keys.py). Carries no attribute of the person. Changes on key rotation (full rebuild)'}
+      provider_id: {classification: CONFIDENTIAL, identifier: direct, handling: token, justification: 'Gold stores a keyed HMAC-SHA256 token (tok_<key_id>_<hex>, lakehouse.governance.tokenise), never the source id; the key lives outside the repo and data (ticket #71). Stable per key, so joins still work'}
       specialty: {classification: INTERNAL, identifier: none, handling: none}
       state: {classification: INTERNAL, identifier: quasi, handling: none, justification: State-level provider location; not a person attribute}
       network_status: {classification: INTERNAL, identifier: none, handling: none}
@@ -78,7 +85,7 @@ tables:
   dim_diagnosis:
     layer: gold
     columns:
-      diagnosis_sk: {classification: PUBLIC, identifier: none, handling: none}
+      diagnosis_sk: {classification: PUBLIC, identifier: none, handling: none}  # ticket #71 decision: unkeyed sha256 of a public ICD-10 code; non-sensitive, stays unkeyed
       icd10_code: {classification: PUBLIC, identifier: none, handling: none}
       icd10_chapter: {classification: PUBLIC, identifier: none, handling: none}
       description: {classification: PUBLIC, identifier: none, handling: none}
@@ -88,8 +95,8 @@ tables:
     layer: gold
     columns:
       claim_id: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: 'Opaque claim key needed for header-to-line joins and audit drill-through; unique per event so linkable: tokenise at export in production'}
-      member_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins; carries no attribute of the person. Unkeyed md5 in the fixture: production gold must use keyed tokenisation (lakehouse.governance)'}
-      provider_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins; carries no attribute of the person. Unkeyed md5 in the fixture: production gold must use keyed tokenisation (lakehouse.governance)'}
+      member_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins: sha256 over (kind, keyed id token, effective_from), so it cannot be enumerated back to an id without the pseudonym key (ticket #71, gold/keys.py). Carries no attribute of the person. Changes on key rotation (full rebuild)'}
+      provider_sk: {classification: INTERNAL, identifier: quasi, handling: none, justification: 'Opaque surrogate key needed for joins: sha256 over (kind, keyed id token, effective_from), so it cannot be enumerated back to an id without the pseudonym key (ticket #71, gold/keys.py). Carries no attribute of the person. Changes on key rotation (full rebuild)'}
       primary_diagnosis_sk: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: Health information once joined to a member; reachable only through the member surrogate key}
       service_date_key: {classification: PHI_LIKE, identifier: quasi, handling: none, justification: Dates of service kept at day grain (limited-data-set style); access limited to roles that need claim-level analysis}
       received_date_key: {classification: PHI_LIKE, identifier: quasi, handling: none, justification: Dates of service kept at day grain (limited-data-set style); access limited to roles that need claim-level analysis}
@@ -139,7 +146,7 @@ tables:
   mart_provider_performance:
     layer: mart
     columns:
-      provider_id: {classification: CONFIDENTIAL, identifier: direct, handling: hash}
+      provider_id: {classification: CONFIDENTIAL, identifier: direct, handling: token, justification: 'Gold stores a keyed HMAC-SHA256 token (tok_<key_id>_<hex>, lakehouse.governance.tokenise), never the source id; the key lives outside the repo and data (ticket #71). Stable per key, so joins still work'}
       service_month: {classification: INTERNAL, identifier: none, handling: none}
       specialty: {classification: INTERNAL, identifier: none, handling: none}
       state_code: {classification: INTERNAL, identifier: quasi, handling: none, justification: Same reasoning as dim_provider.state, state-level provider location, not a person attribute}
@@ -159,7 +166,7 @@ tables:
   mart_member_risk:
     layer: mart
     columns:
-      member_id: {classification: PHI_LIKE, identifier: direct, handling: hash}
+      member_id: {classification: PHI_LIKE, identifier: direct, handling: token, justification: 'Gold stores a keyed HMAC-SHA256 token (tok_<key_id>_<hex>, lakehouse.governance.tokenise), never the source id; the key lives outside the repo and data (ticket #71). Stable per key, so joins still work'}
       birth_year: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
       age_years: {classification: PHI_LIKE, identifier: quasi, handling: generalise}
       sex: {classification: CONFIDENTIAL, identifier: quasi, handling: none, justification: Same reasoning as dim_member.sex, needed for risk stratification, protected by role and row access}
