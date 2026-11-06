@@ -23,10 +23,21 @@ DEFAULT_PATH = Path(__file__).resolve().parents[3] / "governance" / "feature_reg
 ENTITIES = ("member", "provider", "claim")
 TRANSFORMS = ("aggregate", "difference", "generalise", "flag", "lookup", "passthrough")
 DERIVED = ("aggregate", "difference", "generalise", "flag")
-REQUIRED = (
-    "name entity dtype window description owner source_columns transform classification "
-    "identifier handling outcome_dependent nullable"
-).split()
+REQUIRED = [
+    "name",
+    "entity",
+    "dtype",
+    "window",
+    "description",
+    "owner",
+    "source_columns",
+    "transform",
+    "classification",
+    "identifier",
+    "handling",
+    "outcome_dependent",
+    "nullable",
+]
 RANK = {c: i for i, c in enumerate(cls_registry.CLASSIFICATIONS)}
 
 

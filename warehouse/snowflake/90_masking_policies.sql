@@ -39,11 +39,11 @@ COMMENT = 'Data classification of a column, from governance/data_classification.
 CREATE TAG IF NOT EXISTS privacy_handling ALLOWED_VALUES 'MASK', 'GENERALISE', 'DROP'
 COMMENT = 'Handling for non-privileged readers; masking policies are bound to this tag.';
 
--- Linter note: sqlfluff 3.3 cannot parse the SYSTEM$GET_TAG_ON_CURRENT_COLUMN function name and
+-- Linter note: sqlfluff 4.5 parses the policies (3.3 could not) but still
 -- wants `AS(` and lower-case types in policy signatures, which are valid but off-style. The
--- three policy statements below are therefore excluded from parse/layout/capitalisation rules
+-- three policy statements below are therefore excluded from layout/capitalisation rules
 -- (the rest of the file is linted normally); structure is covered by tests/governance instead.
--- noqa: disable=PRS,LT01,LT02,CP02
+-- noqa: disable=LT01,LT02,CP02
 
 CREATE MASKING POLICY IF NOT EXISTS mp_privacy_varchar AS (val VARCHAR) RETURNS VARCHAR ->
 CASE
@@ -69,8 +69,12 @@ CASE
 END
 COMMENT = 'Tag-based masking for DATE: GENERALISE to January 1 of the year, else NULL.';
 
--- noqa: enable=PRS,LT01,LT02,CP02
+-- noqa: enable=LT01,LT02,CP02
 
+-- Linter note: sqlfluff 4.5 cannot parse `SET MASKING POLICY ... FORCE` (valid Snowflake); parse errors
+-- are suppressed for these three statements only.
+-- noqa: disable=PRS
 ALTER TAG privacy_handling SET MASKING POLICY mp_privacy_varchar FORCE;
 ALTER TAG privacy_handling SET MASKING POLICY mp_privacy_number FORCE;
 ALTER TAG privacy_handling SET MASKING POLICY mp_privacy_date FORCE;
+-- noqa: enable=PRS

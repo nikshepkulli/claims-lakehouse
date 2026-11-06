@@ -29,14 +29,77 @@ DIALECT = "duckdb"
 # (read_parquet, read_csv, glob), environment/config probes (getenv, current_setting), random
 # and system functions without having to enumerate every dangerous name.
 ALLOWED_FUNCTIONS = frozenset(
-    """
-    count sum avg min max round ceil floor abs coalesce nullif greatest least cast try_cast
-    case if extract date_trunc year month day quarter dayofweek week current_date lower upper
-    length substring substr trim concat row_number rank dense_rank ntile lag lead first_value
-    last_value stddev stddev_samp stddev_pop variance median quantile_cont quantile_disc
-    approx_count_distinct count_if sum_if bool_or bool_and any_value mode strftime date_diff
-    datediff date_add date_sub to_date mod power sqrt ln log exp sign string_agg
-    """.split()
+    [
+        "count",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "round",
+        "ceil",
+        "floor",
+        "abs",
+        "coalesce",
+        "nullif",
+        "greatest",
+        "least",
+        "cast",
+        "try_cast",
+        "case",
+        "if",
+        "extract",
+        "date_trunc",
+        "year",
+        "month",
+        "day",
+        "quarter",
+        "dayofweek",
+        "week",
+        "current_date",
+        "lower",
+        "upper",
+        "length",
+        "substring",
+        "substr",
+        "trim",
+        "concat",
+        "row_number",
+        "rank",
+        "dense_rank",
+        "ntile",
+        "lag",
+        "lead",
+        "first_value",
+        "last_value",
+        "stddev",
+        "stddev_samp",
+        "stddev_pop",
+        "variance",
+        "median",
+        "quantile_cont",
+        "quantile_disc",
+        "approx_count_distinct",
+        "count_if",
+        "sum_if",
+        "bool_or",
+        "bool_and",
+        "any_value",
+        "mode",
+        "strftime",
+        "date_diff",
+        "datediff",
+        "date_add",
+        "date_sub",
+        "to_date",
+        "mod",
+        "power",
+        "sqrt",
+        "ln",
+        "log",
+        "exp",
+        "sign",
+        "string_agg",
+    ]
 )
 
 _BLOCKED_NODES = tuple(
@@ -235,7 +298,7 @@ def check_sql(sql: str, catalog: Catalog, cfg: GenAIConfig | None = None) -> Gua
     if violations:
         return _reject(*dict.fromkeys(violations))
 
-    schema = {t: {c: "VARCHAR" for c in v.allowed} for t, v in catalog.tables.items()}
+    schema = {t: dict.fromkeys(v.allowed, "VARCHAR") for t, v in catalog.tables.items()}
     try:
         qualified = qualify(
             root.copy(),

@@ -43,7 +43,9 @@ Checkov: `pip install checkov && checkov -d infra --framework terraform --soft-f
 Individual checks: `ruff check .`, `ruff format --check .`, `pytest`, `sqlfluff lint .`.
 
 Tool versions are pinned in `requirements-dev.txt`; ruff and pytest settings live in
-`pyproject.toml`.
+`pyproject.toml`. ruff is pinned at 0.17.4 and sqlfluff at 4.5.0 (the latter in both
+`requirements-dev.txt` and `requirements-dbt.txt`; keep the two in step). Both were bumped together in
+#64, superseding the Dependabot linters-group PR; the Dependabot ignore policy was left unchanged.
 
 ## Required status checks on `main`
 
