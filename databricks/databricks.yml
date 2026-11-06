@@ -1,0 +1,215 @@
+# Databricks Asset Bundle: the bronze -> silver -> gold Spark jobs on Databricks (ticket #10).
+# Offline-validated only (docs/databricks.md); never deployed or run on a real workspace.
+#
+# No workspace host, token or account id lives in this file. Authenticate with a CLI profile or
+# DATABRICKS_HOST + DATABRICKS_TOKEN in the environment (see docs/databricks.md).
+bundle:
+  name: claims-lakehouse
+
+# The jobs run `lakehouse.*` from a wheel built out of src/. PySpark and Delta come from the
+# Databricks runtime and are deliberately not declared as wheel dependencies.
+artifacts:
+  lakehouse_wheel:
+    type: whl
+    build: pip wheel . --no-deps --wheel-dir dist
+    path: ..
+    files:
+      - source: ../dist/*.whl
+
+variables:
+  catalog:
+    description: Unity Catalog catalog that holds the lake volume (Free Edition default is `workspace`).
+    default: workspace
+  schema:
+    description: Schema (database) that holds the lake volume.
+    default: claims_lakehouse
+  volume:
+    description: Managed volume that holds raw files and the bronze/silver/gold Delta tables.
+    default: lake
+  raw_input:
+    description: Directory of claimsgen output (claims/, members/, ... per dataset).
+    default: /Volumes/${var.catalog}/${var.schema}/${var.volume}/raw
+  bronze_root:
+    description: Bronze root. A /Volumes path, or an s3a:// or abfss:// URI the storage resolver accepts.
+    default: /Volumes/${var.catalog}/${var.schema}/${var.volume}/bronze
+  silver_root:
+    description: Silver root (same forms as bronze_root).
+    default: /Volumes/${var.catalog}/${var.schema}/${var.volume}/silver
+  gold_root:
+    description: Gold root (same forms as bronze_root).
+    default: /Volumes/${var.catalog}/${var.schema}/${var.volume}/gold
+  batch_date:
+    description: YYYY-MM-DD for one batch, or `all` for every batch found.
+    default: all
+  schedule_status:
+    description: PAUSED or UNPAUSED. Every schedule ships PAUSED.
+    default: PAUSED
+  spark_version:
+    description: Databricks Runtime for the classic job cluster (prod target only).
+    default: 16.4.x-scala2.12
+  node_type_id:
+    description: Cloud-specific VM type for the classic job cluster (prod target only), e.g. i3.xlarge on AWS or Standard_DS3_v2 on Azure.
+    default: i3.xlarge
+
+targets:
+  # Databricks Free Edition: serverless compute only, so tasks use an `environments` spec and no
+  # cluster. Also works on any paid workspace with serverless jobs enabled.
+  dev:
+    default: true
+    mode: development
+    resources:
+      jobs:
+        claims_pipeline:
+          name: claims-lakehouse-pipeline
+          description: Bronze -> silver -> gold on serverless compute (Free Edition compatible).
+          max_concurrent_runs: 1
+          timeout_seconds: 3600
+          parameters:
+            - name: batch_date
+              default: ${var.batch_date}
+          environments:
+            - environment_key: lakehouse
+              spec:
+                environment_version: "4"
+                dependencies:
+                  - ../dist/*.whl
+          schedule:
+            quartz_cron_expression: 0 0 2 * * ?
+            timezone_id: UTC
+            pause_status: ${var.schedule_status}
+          tasks:
+            - task_key: bronze
+              environment_key: lakehouse
+              max_retries: 2
+              min_retry_interval_millis: 60000
+              spark_python_task:
+                python_file: ./entrypoint.py
+                parameters:
+                  - --layer
+                  - bronze
+                  - --input
+                  - ${var.raw_input}
+                  - --bronze
+                  - ${var.bronze_root}
+                  - --batch-date
+                  - "{{job.parameters.batch_date}}"
+            - task_key: silver
+              depends_on:
+                - task_key: bronze
+              environment_key: lakehouse
+              max_retries: 2
+              min_retry_interval_millis: 60000
+              spark_python_task:
+                python_file: ./entrypoint.py
+                parameters:
+                  - --layer
+                  - silver
+                  - --bronze
+                  - ${var.bronze_root}
+                  - --silver
+                  - ${var.silver_root}
+                  - --batch-date
+                  - "{{job.parameters.batch_date}}"
+            - task_key: gold
+              depends_on:
+                - task_key: silver
+              environment_key: lakehouse
+              # A failed reconciliation exits non-zero and would fail identically on retry.
+              max_retries: 1
+              min_retry_interval_millis: 60000
+              spark_python_task:
+                python_file: ./entrypoint.py
+                parameters:
+                  - --layer
+                  - gold
+                  - --silver
+                  - ${var.silver_root}
+                  - --gold
+                  - ${var.gold_root}
+                  - --batch-date
+                  - "{{job.parameters.batch_date}}"
+
+  # Classic job cluster for a paid workspace (AWS or Azure). Point the three roots at
+  # s3a:// or abfss:// with --var, and supply the cluster's storage access (instance profile or
+  # managed identity); no keys are configured here.
+  prod:
+    mode: production
+    workspace:
+      root_path: ~/.bundle/${bundle.name}/${bundle.target}
+    resources:
+      jobs:
+        claims_pipeline_cluster:
+          name: claims-lakehouse-pipeline-cluster
+          description: Bronze -> silver -> gold on a classic job cluster (paid workspace).
+          max_concurrent_runs: 1
+          timeout_seconds: 7200
+          parameters:
+            - name: batch_date
+              default: ${var.batch_date}
+          job_clusters:
+            - job_cluster_key: lakehouse
+              new_cluster:
+                spark_version: ${var.spark_version}
+                node_type_id: ${var.node_type_id}
+                num_workers: 2
+                data_security_mode: SINGLE_USER
+          schedule:
+            quartz_cron_expression: 0 0 2 * * ?
+            timezone_id: UTC
+            pause_status: ${var.schedule_status}
+          tasks:
+            - task_key: bronze
+              job_cluster_key: lakehouse
+              max_retries: 2
+              min_retry_interval_millis: 60000
+              libraries:
+                - whl: ../dist/*.whl
+              spark_python_task:
+                python_file: ./entrypoint.py
+                parameters:
+                  - --layer
+                  - bronze
+                  - --input
+                  - ${var.raw_input}
+                  - --bronze
+                  - ${var.bronze_root}
+                  - --batch-date
+                  - "{{job.parameters.batch_date}}"
+            - task_key: silver
+              depends_on:
+                - task_key: bronze
+              job_cluster_key: lakehouse
+              max_retries: 2
+              min_retry_interval_millis: 60000
+              libraries:
+                - whl: ../dist/*.whl
+              spark_python_task:
+                python_file: ./entrypoint.py
+                parameters:
+                  - --layer
+                  - silver
+                  - --bronze
+                  - ${var.bronze_root}
+                  - --silver
+                  - ${var.silver_root}
+                  - --batch-date
+                  - "{{job.parameters.batch_date}}"
+            - task_key: gold
+              depends_on:
+                - task_key: silver
+              job_cluster_key: lakehouse
+              max_retries: 1
+              min_retry_interval_millis: 60000
+              libraries:
+                - whl: ../dist/*.whl
+              spark_python_task:
+                python_file: ./entrypoint.py
+                parameters:
+                  - --layer
+                  - gold
+                  - --silver
+                  - ${var.silver_root}
+                  - --gold
+                  - ${var.gold_root}
+                  - --batch-date
+                  - "{{job.parameters.batch_date}}"

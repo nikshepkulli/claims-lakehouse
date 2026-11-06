@@ -208,6 +208,23 @@ jobs:
           fi
           [ "$RESULT" = "success" ] || [ "$RESULT" = "skipped" ]
 
+  databricks-bundle:
+    # Validates databricks/databricks.yml (dev + prod) with the real Databricks CLI against a local
+    # stub of the two workspace calls validate makes, so no account or secret is involved. This
+    # checks the bundle's shape only; nothing is deployed or run.
+    name: databricks bundle (validate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: databricks/setup-cli@v1.23.0
+        with:
+          version: 1.24.0
+      - run: python databricks/offline_validate.py
+
   dashboard:
     # Static analytics dashboard (#29): claimsgen -> gold TEST FIXTURE -> dbt marts -> site/index.html.
     # Runs the dashboard tests, builds the page and uploads it as an artifact. No deploy here;
