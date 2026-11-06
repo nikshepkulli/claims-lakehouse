@@ -643,20 +643,33 @@
     return root;
   }
 
+  /*__PIPELINE__*/
+
   // ---------- boot ----------
   document.getElementById("subtitle").textContent = "Gold layer · " + D.meta.gold_source + " · " + mlabel(D.meta.period[0]) + " to " + mlabel(D.meta.period[1]);
   document.getElementById("notice").textContent = D.meta.synthetic_notice;
-  var vEx = document.getElementById("view-executive"), vQ = document.getElementById("view-quality");
-  vEx.appendChild(executive());
-  vQ.appendChild(qualityView());
+  var VIEWS = ["executive", "quality", "pipeline"];
+  var TITLES = { executive: "Executive view", quality: "Data quality", pipeline: "Pipeline runs" };
+  var vEl = {};
+  VIEWS.forEach(function (v) { vEl[v] = document.getElementById("view-" + v); });
+  vEl.executive.appendChild(executive());
+  vEl.quality.appendChild(qualityView());
+  vEl.pipeline.appendChild(pipelineView());
   function route() {
-    var q = location.hash === "#quality";
-    vEx.hidden = q; vQ.hidden = !q;
-    var a = document.getElementById("nav-executive"), b = document.getElementById("nav-quality");
-    (q ? b : a).setAttribute("aria-current", "page"); (q ? a : b).removeAttribute("aria-current");
-    document.title = (q ? "Data quality" : "Executive view") + " – Claims Lakehouse Analytics";
+    var parts = location.hash.replace(/^#/, "").split("/");
+    var cur = VIEWS.indexOf(parts[0]) >= 0 ? parts[0] : "executive";
+    VIEWS.forEach(function (v) {
+      vEl[v].hidden = v !== cur;
+      var a = document.getElementById("nav-" + v);
+      if (v === cur) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    });
+    document.title = TITLES[cur] + " \u2013 Claims Lakehouse Analytics";
     hideTip();
     redraw(true);
+    if (cur === "pipeline" && parts[1]) {
+      var t = document.getElementById("pv-" + parts[1]);
+      if (t) { t.scrollIntoView(); t.focus({ preventScroll: true }); }
+    }
   }
   function redraw(force) { redraws.forEach(function (fn) { fn(force); }); }
   window.addEventListener("hashchange", route);

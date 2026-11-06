@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Claims Lakehouse Analytics</title>
-<meta name="description" content="Static analytics dashboard on the gold layer of a synthetic healthcare claims lakehouse: cost, denials, provider performance and a data-quality scorecard.">
+<meta name="description" content="Static analytics dashboard on the gold layer of a synthetic healthcare claims lakehouse: cost, denials, provider performance and a data-quality scorecard, and a pipeline view with lineage graph, run timeline and quality trend.">
 <style>
 /*__CSS__*/
 </style>
@@ -22,6 +22,7 @@
     <nav aria-label="Views">
       <a href="#executive" id="nav-executive">Executive view</a>
       <a href="#quality" id="nav-quality">Data quality and lineage</a>
+      <a href="#pipeline" id="nav-pipeline">Pipeline runs</a>
     </nav>
     <button type="button" id="theme" class="theme" aria-label="Switch colour theme">Theme</button>
   </div>
@@ -31,6 +32,7 @@
   <noscript><p class="card">This dashboard draws its charts with JavaScript. The numbers it shows are embedded in this page as JSON (<code>#dashboard-data</code>).</p></noscript>
   <div id="view-executive" class="view"></div>
   <div id="view-quality" class="view" hidden></div>
+  <div id="view-pipeline" class="view" hidden></div>
 </main>
 <footer class="wrap foot">
   <p>Built from the gold layer of <a href="https://github.com/nikshepkulli/claims-lakehouse">claims-lakehouse</a> with DuckDB and dbt marts. Static page: no server, no cookies, no network requests when viewed.</p>
