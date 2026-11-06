@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Claims Lakehouse Analytics</title>
+<meta name="description" content="Static analytics dashboard on the gold layer of a synthetic healthcare claims lakehouse: cost, denials, provider performance and a data-quality scorecard.">
+<style>
+/*__CSS__*/
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap top-row">
+    <div class="brand">
+      <h1>Claims lakehouse analytics</h1>
+      <p class="sub" id="subtitle"></p>
+    </div>
+    <nav aria-label="Views">
+      <a href="#executive" id="nav-executive">Executive view</a>
+      <a href="#quality" id="nav-quality">Data quality and lineage</a>
+    </nav>
+    <button type="button" id="theme" class="theme" aria-label="Switch colour theme">Theme</button>
+  </div>
+  <div class="banner" role="note"><div class="wrap"><strong>Synthetic data.</strong> <span id="notice"></span></div></div>
+</header>
+<main id="main" class="wrap" tabindex="-1">
+  <noscript><p class="card">This dashboard draws its charts with JavaScript. The numbers it shows are embedded in this page as JSON (<code>#dashboard-data</code>).</p></noscript>
+  <div id="view-executive" class="view"></div>
+  <div id="view-quality" class="view" hidden></div>
+</main>
+<footer class="wrap foot">
+  <p>Built from the gold layer of <a href="https://github.com/nikshepkulli/claims-lakehouse">claims-lakehouse</a> with DuckDB and dbt marts. Static page: no server, no cookies, no network requests when viewed.</p>
+</footer>
+<div id="tip" class="tip" role="status" aria-live="polite" hidden></div>
+<script type="application/json" id="dashboard-data">__DATA__</script>
+<script>
+/*__JS__*/
+</script>
+</body>
+</html>
