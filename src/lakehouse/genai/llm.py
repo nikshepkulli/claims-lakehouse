@@ -71,9 +71,10 @@ class BedrockLLM:
     @property
     def client(self) -> Any:
         if self._client is None:
+            region = aws_region()  # fail on a missing region before importing boto3
             import boto3  # lazy: boto3 is only needed for the real provider
 
-            self._client = boto3.client("bedrock-runtime", region_name=aws_region())
+            self._client = boto3.client("bedrock-runtime", region_name=region)
         return self._client
 
     def generate(self, system: str, question: str) -> LLMResponse:
