@@ -255,16 +255,52 @@ def load_reconciliation(path: Path | None) -> list[dict] | None:
     return [{k: r.get(k) for k in keep} for r in rows]
 
 
-def load_quality_json(path: Path | None) -> dict | None:
-    """Load the data-quality framework summary (ticket #22), validating its minimal shape.
+def _suites_from_runner_result(doc: dict, path: Path) -> list[dict]:
+    """Convert ``python -m lakehouse.quality run`` output (``<layer>-result.json``, ticket #22).
 
-    Expected: ``{"generated_by": str, "suites": [{"name": str, "layer": str,
-    "evaluated": int, "passed": int, "failed": int}, ...]}``. Raises ``ValueError`` on a
-    malformed file so a broken contract fails the build instead of rendering nonsense.
+    One suite per table. A required table that is absent is reported with ``status: missing``
+    and zero expectations evaluated: it is neither a pass nor hidden.
+    """
+    layer = doc.get("layer", "unknown")
+    suites = []
+    for table, t in doc["tables"].items():
+        if not isinstance(t, dict) or "expectations" not in t:
+            raise ValueError(f"{path}: table {table!r} has no 'expectations' list")
+        exps = t["expectations"]
+        passed = sum(1 for e in exps if e.get("success"))
+        suites.append(
+            {
+                "name": f"{layer}.{table}",
+                "layer": layer,
+                "evaluated": len(exps),
+                "passed": passed,
+                "failed": len(exps) - passed,
+                "status": t.get("status", "validated"),
+                "problem": t.get("problem"),
+            }
+        )
+    return suites
+
+
+def load_quality_json(path: Path | None) -> dict | None:
+    """Load the data-quality framework result (ticket #22), validating its shape.
+
+    Two shapes are accepted. The runner's own ``<layer>-result.json`` (has a ``tables`` mapping;
+    converted to one suite per table, see ``_suites_from_runner_result``), or the minimal summary
+    ``{"generated_by": str, "suites": [{"name", "layer", "evaluated", "passed", "failed"}]}``
+    (optional per-suite ``status`` and ``problem``). Raises ``ValueError`` on a malformed file so
+    a broken contract fails the build instead of rendering nonsense.
     """
     if path is None:
         return None
     doc = json.loads(path.read_text())
+    if isinstance(doc.get("tables"), dict) and doc["tables"]:
+        ge = doc.get("great_expectations_version")
+        by = f"great_expectations {ge} via lakehouse.quality" if ge else "lakehouse.quality"
+        return {
+            "generated_by": by,
+            "suites": _suites_from_runner_result(doc, path),
+        }
     suites = doc.get("suites")
     if not isinstance(suites, list) or not suites:
         raise ValueError(f"{path}: expected a non-empty 'suites' list")
