@@ -1,12 +1,15 @@
 name: dbt
 
-# dbt project on DuckDB (ticket #15). Builds against a gold-shaped TEST FIXTURE made from
-# claimsgen output (scripts/make_gold_fixture.py), not against Spark gold (#8) or Snowflake.
+# dbt project on DuckDB (ticket #15). This job builds against the gold-shaped TEST FIXTURE made
+# from claimsgen output (scripts/make_gold_fixture.py): a fast, Spark-free fallback. The REAL
+# Spark gold (#8) is exercised by the `pipeline e2e` job in ci.yml, which runs the same
+# `dbt build` on the gold Parquet export. Snowflake is not exercised by either.
 on:
   pull_request:
     paths:
       - "dbt/**"
       - "scripts/make_gold_fixture.py"
+      - "src/lakehouse/gold/schema.py"
       - "tests/dbt/**"
       - "analytics/**"
       - "scripts/run_analytics_queries.py"

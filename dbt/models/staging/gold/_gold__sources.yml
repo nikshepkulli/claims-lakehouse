@@ -2,9 +2,11 @@ version: 2
 
 # Sources are the GOLD CONTRACT: the tables in warehouse/snowflake/01_gold_ddl.sql.
 #  - Snowflake target: schema MARTS in the target database (loaded by warehouse/snowflake/3x_*.sql).
-#  - DuckDB target (local/CI): Parquet at $GOLD_PATH/<table>/*.parquet via dbt-duckdb
-#    `external_location`. In this PR that Parquet is a TEST FIXTURE from
-#    scripts/make_gold_fixture.py, standing in for the Spark gold of ticket #8.
+#  - DuckDB target (local/CI): Parquet at <gold_path>/<table>/*.parquet via dbt-duckdb
+#    `external_location`. gold_path = dbt var `gold_path`, else env GOLD_PATH, else the
+#    fixture default `data/gold` (scripts/make_gold_fixture.py, now only a fallback).
+#    The REAL gold is the Spark job's Parquet export: GOLD_PATH=<gold root>/export
+#    (or --vars '{gold_path: <gold root>/export}'), see docs/dbt.md and docs/gold.md.
 # tests/dbt/test_gold_contract.py keeps these column lists equal to the DDL.
 sources:
   - name: gold
@@ -12,7 +14,7 @@ sources:
     schema: marts
     config:
       meta:
-        external_location: "{{ env_var('GOLD_PATH', 'data/gold') }}/{name}/*.parquet"
+        external_location: "{{ var('gold_path', env_var('GOLD_PATH', 'data/gold')) }}/{name}/*.parquet"
       loaded_at_field: loaded_at
       freshness:
         warn_after: {count: 2, period: day}
