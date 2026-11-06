@@ -9,6 +9,9 @@ PyYAML==6.0.3
 # streaming ingest deps (tests import them)
 -r requirements-streaming.txt
 
+# data-quality framework tests (Great Expectations, pandas, delta-rs; ticket #22)
+-r requirements-quality.txt
+
 # governed GenAI Q&A (src/lakehouse/genai, ticket #28): tests need the parser; boto3 (Bedrock)
 # is optional and tests inject a stub client. See requirements-genai.txt.
 sqlglot==30.29.0

@@ -1,0 +1,98 @@
+# Silver suites (ticket #22). Silver is "trusted": every rule silver enforces (docs/silver.md) is
+# re-asserted here against the data actually on disk, independently of the Spark job, so a rule
+# that silently stops firing is caught. Blocking = silver's own guarantees; warn = plausibility
+# bounds the pipeline does not enforce. Domains/patterns come from docs/data-generator.md.
+layer: silver
+description: Typed, deduplicated, validated Delta tables plus the quarantine and reconciliation tables.
+
+tables:
+  members:
+    columns: {member_id: string, birth_year: int, sex: string, state: string, plan_type: string, enrollment_date: date}
+    derived:
+      - {name: silver_age_hours, kind: age_hours, column: _silver_ts}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1, note: "volume: not empty"}
+      - {expectation: expect_column_values_to_not_be_null, column: member_id}
+      - {expectation: expect_column_values_to_be_unique, column: member_id}
+      - {expectation: expect_column_values_to_be_in_set, column: sex, value_set: [F, M, U]}
+      - {expectation: expect_column_values_to_be_between, column: birth_year, min_value: 1900, max_value: 2100}
+      - {expectation: expect_column_values_to_be_in_set, column: plan_type, value_set: [HMO, PPO, EPO, HDHP, MEDICARE_ADV, MEDICAID_MCO], severity: warn}
+      - {expectation: expect_column_values_to_match_regex, column: member_id, regex: '^M\d{9}$', severity: warn}
+      - {expectation: expect_column_min_to_be_between, column: silver_age_hours, max_value: 168, severity: warn, note: "freshness: newest silver row is under 7 days old"}
+  providers:
+    columns: {provider_id: string, specialty: string, state: string, network_status: string, cost_tier: string}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_not_be_null, column: provider_id}
+      - {expectation: expect_column_values_to_be_unique, column: provider_id}
+      - {expectation: expect_column_values_to_be_in_set, column: cost_tier, value_set: [STANDARD, ELEVATED, HIGH_COST]}
+      - {expectation: expect_column_values_to_be_in_set, column: network_status, value_set: [IN_NETWORK, OUT_OF_NETWORK], severity: warn}
+      - {expectation: expect_column_values_to_match_regex, column: provider_id, regex: '^PRV\d{7}$', severity: warn}
+  claims:
+    columns: {claim_id: string, member_id: string, provider_id: string, claim_type: string, place_of_service: string, service_date: date, received_date: date, claim_status: string, line_count: int, total_billed_amount: "decimal(12,2)", total_allowed_amount: "decimal(12,2)", total_paid_amount: "decimal(12,2)"}
+    derived:
+      - {name: member_resolves, kind: fk, column: member_id, ref: members.member_id}
+      - {name: provider_resolves, kind: fk, column: provider_id, ref: providers.provider_id}
+      - {name: silver_age_hours, kind: age_hours, column: _silver_ts}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_not_be_null, column: claim_id}
+      - {expectation: expect_column_values_to_be_unique, column: claim_id}
+      - {expectation: expect_column_values_to_not_be_null, column: member_id}
+      - {expectation: expect_column_values_to_not_be_null, column: service_date}
+      - {expectation: expect_column_values_to_not_be_null, column: received_date}
+      - {expectation: expect_column_values_to_be_in_set, column: member_resolves, value_set: [true], note: "referential integrity: claims.member_id in members (orphans are quarantined)"}
+      - {expectation: expect_column_values_to_be_in_set, column: provider_resolves, value_set: [true], note: "referential integrity: claims.provider_id in providers"}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_type, value_set: [PROFESSIONAL, INSTITUTIONAL, PHARMACY]}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_status, value_set: [PAID, DENIED]}
+      - {expectation: expect_column_pair_values_a_to_be_greater_than_b, column_A: received_date, column_B: service_date, or_equal: true, note: "received on or after service"}
+      - {expectation: expect_column_values_to_be_between, column: line_count, min_value: 1, max_value: 50, severity: warn}
+      - {expectation: expect_column_values_to_be_between, column: total_billed_amount, min_value: 0, severity: warn, note: "header totals sum their lines; a quarantined negative line can leave the header lower"}
+      - {expectation: expect_column_values_to_match_regex, column: claim_id, regex: '^CLM\d{12}$', severity: warn}
+      - {expectation: expect_column_min_to_be_between, column: silver_age_hours, max_value: 168, severity: warn, note: "freshness: newest silver row is under 7 days old"}
+  claim_lines:
+    columns: {line_id: string, claim_id: string, line_number: int, procedure_code: string, units: int, service_date: date, billed_amount: "decimal(12,2)", allowed_amount: "decimal(12,2)", paid_amount: "decimal(12,2)"}
+    derived:
+      - {name: claim_resolves, kind: fk, column: claim_id, ref: claims.claim_id}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_not_be_null, column: line_id}
+      - {expectation: expect_column_values_to_be_unique, column: line_id}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_resolves, value_set: [true], note: "referential integrity: claim_lines.claim_id in claims"}
+      - {expectation: expect_column_values_to_match_regex, column: procedure_code, regex: '^(\d{5}|[A-V]\d{4})$', note: "CPT-shaped (data-generator.md)"}
+      - {expectation: expect_column_values_to_be_between, column: billed_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: allowed_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: paid_amount, min_value: 0}
+      - {expectation: expect_column_values_to_be_between, column: units, min_value: 1}
+      - {expectation: expect_column_values_to_be_between, column: line_number, min_value: 1}
+      - {expectation: expect_column_values_to_not_be_null, column: service_date}
+  diagnoses:
+    columns: {claim_id: string, dx_seq: int, icd10_code: string, diagnosis_type: string}
+    derived:
+      - {name: claim_resolves, kind: fk, column: claim_id, ref: claims.claim_id}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_compound_columns_to_be_unique, column_list: [claim_id, dx_seq]}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_resolves, value_set: [true], note: "referential integrity: diagnoses.claim_id in claims"}
+      - {expectation: expect_column_values_to_not_be_null, column: icd10_code}
+      - {expectation: expect_column_values_to_match_regex, column: icd10_code, regex: '^[A-TV-Z]\d[0-9A-Z](\.[0-9A-Z]{1,4})?$', note: "ICD-10 shape (data-generator.md)"}
+      - {expectation: expect_column_values_to_be_in_set, column: diagnosis_type, value_set: [PRIMARY, SECONDARY]}
+  silver_quarantine:
+    columns: [dataset, business_key, reason_code, reason_detail, all_reason_codes, source_batch, source_file, payload, _ingest_date, _quarantined_at]
+    expectations:
+      - {expectation: expect_column_values_to_not_be_null, column: dataset}
+      - {expectation: expect_column_values_to_not_be_null, column: reason_code, note: "a quarantined row always says why"}
+      - {expectation: expect_column_values_to_not_be_null, column: source_batch}
+      - {expectation: expect_column_values_to_not_be_null, column: payload}
+  silver_reconciliation:
+    columns: {dataset: string, batch_id: string, batch_date: date, bronze_rows: bigint, silver_rows: bigint, quarantined_rows: bigint, deduped_rows: bigint, identity_ok: boolean}
+    derived:
+      - {name: identity_recomputed, kind: eval, expr: "bronze_rows == silver_rows + quarantined_rows + deduped_rows"}
+      - {name: silver_rows_match_table, kind: batch_count, table_col: dataset, batch_col: batch_id, count_col: silver_rows, ref_batch_col: _batch_id, where: "dataset in ['members','providers','claims','claim_lines','diagnoses']"}
+      - {name: quarantine_share_ok, kind: eval, expr: "quarantined_rows <= 0.2 * bronze_rows"}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_be_in_set, column: identity_ok, value_set: [true], note: "silver job asserted bronze = silver + quarantined + deduped"}
+      - {expectation: expect_column_values_to_be_in_set, column: identity_recomputed, value_set: [true], note: "reconciliation: identity recomputed from the recorded counts"}
+      - {expectation: expect_column_values_to_be_in_set, column: silver_rows_match_table, value_set: [true], note: "reconciliation: recorded silver_rows equals rows really in the table"}
+      - {expectation: expect_column_values_to_be_in_set, column: quarantine_share_ok, value_set: [true], severity: warn, note: "volume: no more than 20% of a batch is quarantined"}
