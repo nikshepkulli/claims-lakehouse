@@ -1,0 +1,53 @@
+name: Publish dashboard (GitHub Pages)
+
+# Manual only. This workflow does NOT run on push or pull_request and nothing has been deployed
+# with it: GitHub Pages must first be enabled for the repository (Settings > Pages > Source:
+# GitHub Actions) by the owner. Until then a run fails at the deploy step, which is expected.
+# The page is built from the synthetic gold TEST FIXTURE (see docs/dashboard.md).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dbt.txt
+      - run: pip install -r requirements-dbt.txt
+      - name: generate synthetic claims and the gold test fixture
+        run: |
+          PYTHONPATH=src python -m claimsgen --rows 5000 --seed 42 --out data/raw --quiet
+          python scripts/make_gold_fixture.py --raw data/raw --out data/gold
+      - name: build the dashboard
+        run: python -m dashboard.build --gold data/gold --raw data/raw --out site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

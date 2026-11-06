@@ -1,0 +1,58 @@
+name: Databricks deploy
+
+# Manual only: never runs on push or pull_request. Deploys databricks/databricks.yml to the
+# workspace named by the GitHub Environment `databricks-<target>` (secrets DATABRICKS_HOST and
+# DATABRICKS_TOKEN live there, never in the repo). Needs your own Databricks workspace; see
+# docs/databricks.md. Written and statically checked, never executed (no workspace exists yet).
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Bundle target
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+      run_pipeline:
+        description: Run the pipeline job once after deploying (batch_date=all)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: databricks-deploy-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy (${{ inputs.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/main'
+    environment: databricks-${{ inputs.target }}
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: databricks/setup-cli@v1.23.0
+        with:
+          version: 1.24.0
+      - name: validate
+        working-directory: databricks
+        run: databricks bundle validate -t ${{ inputs.target }}
+      - name: deploy (builds the wheel, uploads it and the entrypoint, creates the job)
+        working-directory: databricks
+        run: databricks bundle deploy -t ${{ inputs.target }}
+      - name: run once
+        if: inputs.run_pipeline
+        working-directory: databricks
+        run: |
+          job=claims_pipeline
+          [ "${{ inputs.target }}" = "prod" ] && job=claims_pipeline_cluster
+          databricks bundle run -t ${{ inputs.target }} "$job" --params batch_date=all

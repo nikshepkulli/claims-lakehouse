@@ -11,3 +11,6 @@ PyYAML==6.0.3
 
 # data-quality framework tests (Great Expectations, pandas, delta-rs; ticket #22)
 -r requirements-quality.txt
+
+# feature engineering tests (tests/features, ticket #26)
+duckdb==2.0.0
