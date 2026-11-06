@@ -1,0 +1,84 @@
+# Bronze suites (ticket #22). Bronze is "as landed": the generator's defects (duplicates, nulls,
+# bad codes, orphans) are expected here and silver quarantines them, so defect-shaped checks are
+# severity warn. Blocking = the ingestion contract: tables exist, columns and metadata are intact,
+# batch lineage is well-formed, volume is non-zero. Docs: docs/data-quality.md
+layer: bronze
+description: Raw landing tables with ingestion metadata (_batch_id, _ingest_date, _ingest_ts, _source_file).
+
+tables:
+  claims:
+    columns: [claim_id, member_id, provider_id, claim_type, place_of_service, service_date, received_date, claim_status, line_count, total_billed_amount, total_allowed_amount, total_paid_amount, _ingest_ts, _source_file, _batch_id, _ingest_date]
+    derived:
+      - {name: ingest_age_hours, kind: age_hours, column: _ingest_ts}
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1, note: "volume: bronze claims is not empty"}
+      - {expectation: expect_column_values_to_not_be_null, column: _batch_id}
+      - {expectation: expect_column_values_to_match_regex, column: _batch_id, regex: '^b\d{8}$', note: "batch id is bYYYYMMDD"}
+      - {expectation: expect_column_values_to_not_be_null, column: _ingest_date}
+      - {expectation: expect_column_values_to_not_be_null, column: _ingest_ts}
+      - {expectation: expect_column_values_to_not_be_null, column: _source_file}
+      - {expectation: expect_column_values_to_not_be_null, column: claim_id, severity: warn}
+      - {expectation: expect_column_values_to_be_unique, column: claim_id, severity: warn, note: "generator injects duplicate claims; silver dedupes"}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_type, value_set: [PROFESSIONAL, INSTITUTIONAL, PHARMACY], severity: warn}
+      - {expectation: expect_column_values_to_be_in_set, column: claim_status, value_set: [PAID, DENIED], severity: warn}
+      - {expectation: expect_column_min_to_be_between, column: ingest_age_hours, max_value: 168, severity: warn, note: "freshness: newest bronze row is under 7 days old"}
+  claim_lines:
+    columns: [line_id, claim_id, line_number, procedure_code, units, service_date, billed_amount, allowed_amount, paid_amount, _ingest_ts, _source_file, _batch_id, _ingest_date]
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_not_be_null, column: _batch_id}
+      - {expectation: expect_column_values_to_match_regex, column: _batch_id, regex: '^b\d{8}$'}
+      - {expectation: expect_column_values_to_not_be_null, column: _ingest_date}
+      - {expectation: expect_column_values_to_not_be_null, column: line_id, severity: warn}
+      - {expectation: expect_column_values_to_match_regex, column: procedure_code, regex: '^(\d{5}|[A-V]\d{4})$', severity: warn, note: "generator injects invalid procedure codes (data-generator.md)"}
+      - {expectation: expect_column_values_to_be_between, column: billed_amount, min_value: 0, severity: warn, note: "generator injects negative amounts"}
+  diagnoses:
+    columns: [claim_id, dx_seq, icd10_code, diagnosis_type, _ingest_ts, _source_file, _batch_id, _ingest_date]
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_not_be_null, column: _batch_id}
+      - {expectation: expect_column_values_to_match_regex, column: _batch_id, regex: '^b\d{8}$'}
+      - {expectation: expect_column_values_to_not_be_null, column: claim_id, severity: warn}
+      - {expectation: expect_column_values_to_match_regex, column: icd10_code, regex: '^[A-TV-Z]\d[0-9A-Z](\.[0-9A-Z]{1,4})?$', severity: warn, note: "generator injects invalid ICD-10 codes"}
+      - {expectation: expect_column_values_to_be_in_set, column: diagnosis_type, value_set: [PRIMARY, SECONDARY], severity: warn}
+  members:
+    columns: [member_id, birth_year, sex, state, plan_type, enrollment_date, _ingest_ts, _source_file, _batch_id, _ingest_date]
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_not_be_null, column: _batch_id}
+      - {expectation: expect_column_values_to_match_regex, column: _batch_id, regex: '^b\d{8}$'}
+      - {expectation: expect_column_values_to_not_be_null, column: member_id}
+      - {expectation: expect_column_values_to_be_unique, column: member_id, severity: warn, note: "one snapshot per batch; repeats across snapshots are normal for SCD2 sources"}
+      - {expectation: expect_column_values_to_be_in_set, column: sex, value_set: [F, M, U], severity: warn}
+  providers:
+    columns: [provider_id, specialty, state, network_status, cost_tier, _ingest_ts, _source_file, _batch_id, _ingest_date]
+    expectations:
+      - {expectation: expect_table_row_count_to_be_between, min_value: 1}
+      - {expectation: expect_column_values_to_not_be_null, column: _batch_id}
+      - {expectation: expect_column_values_to_match_regex, column: _batch_id, regex: '^b\d{8}$'}
+      - {expectation: expect_column_values_to_not_be_null, column: provider_id}
+      - {expectation: expect_column_values_to_be_in_set, column: cost_tier, value_set: [STANDARD, ELEVATED, HIGH_COST], severity: warn}
+  notes:
+    optional: true
+    columns: [note_id, claim_id, member_id, note_date, text, _batch_id]
+    expectations:
+      - {expectation: expect_column_values_to_not_be_null, column: _batch_id}
+  events:
+    optional: true
+    columns: [event_id, event_type, event_ts, claim_id, _batch_id]
+    expectations:
+      - {expectation: expect_column_values_to_not_be_null, column: _batch_id}
+  schema_log:
+    path: _meta/schema_log
+    optional: true
+    columns: [dataset, batch_id, batch_date, observed_columns, columns_added, drift_detected, files_read, files_quarantined, rows_written]
+    expectations:
+      - {expectation: expect_column_values_to_not_be_null, column: dataset}
+      - {expectation: expect_column_values_to_be_between, column: files_quarantined, max_value: 0, severity: warn, note: "no unreadable source file in the batch"}
+      - {expectation: expect_column_values_to_be_in_set, column: drift_detected, value_set: [false], severity: warn, note: "schema drift is visible, not fatal: bronze keeps the extra column"}
+  ingest_quarantine:
+    path: _meta/quarantine
+    optional: true
+    columns: [_batch_id, dataset, source_file, reason]
+    expectations:
+      - {expectation: expect_column_values_to_not_be_null, column: reason}

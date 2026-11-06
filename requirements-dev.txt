@@ -8,3 +8,6 @@ PyYAML==6.0.3
 
 # streaming ingest deps (tests import them)
 -r requirements-streaming.txt
+
+# data-quality framework tests (Great Expectations, pandas, delta-rs; ticket #22)
+-r requirements-quality.txt
