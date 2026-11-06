@@ -210,3 +210,49 @@ jobs:
             exit 1
           fi
           [ "$RESULT" = "success" ] || [ "$RESULT" = "skipped" ]
+
+  databricks-bundle:
+    # Validates databricks/databricks.yml (dev + prod) with the real Databricks CLI against a local
+    # stub of the two workspace calls validate makes, so no account or secret is involved. This
+    # checks the bundle's shape only; nothing is deployed or run.
+    name: databricks bundle (validate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: databricks/setup-cli@v1.23.0
+        with:
+          version: 1.24.0
+      - run: python databricks/offline_validate.py
+
+  dashboard:
+    # Static analytics dashboard (#29): claimsgen -> gold TEST FIXTURE -> dbt marts -> site/index.html.
+    # Runs the dashboard tests, builds the page and uploads it as an artifact. No deploy here;
+    # publishing is the manual pages.yml workflow.
+    name: dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dbt.txt
+      - run: pip install -r requirements-dbt.txt
+      - name: dashboard tests (builds the page, golden numbers, no external requests, a11y)
+        run: pytest tests/dashboard -q
+      - name: generate synthetic claims and the gold test fixture
+        run: |
+          PYTHONPATH=src python -m claimsgen --rows 5000 --seed 42 --out data/raw --quiet
+          python scripts/make_gold_fixture.py --raw data/raw --out data/gold
+      - name: build the dashboard
+        run: python -m dashboard.build --gold data/gold --raw data/raw --out site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-site
+          path: site/index.html
+          if-no-files-found: error

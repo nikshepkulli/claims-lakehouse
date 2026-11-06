@@ -18,3 +18,14 @@ quote-style = "double"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = ["spark: needs PySpark + Java (run via `make test-spark` or the spark-tests CI job)"]
+
+# Wheel for the Databricks bundle (databricks/databricks.yml, docs/databricks.md). Only the Spark
+# job packages ship; PySpark and Delta come from the Databricks runtime, so no dependencies are
+# declared here (the local/CI pins live in requirements-*.txt).
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["lakehouse*", "lakehouse_common*"]

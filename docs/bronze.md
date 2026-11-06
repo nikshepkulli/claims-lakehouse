@@ -59,7 +59,29 @@ Per run, per dataset, `_meta/schema_log` records the observed schema (Spark sche
 - an unreadable structured file (corrupt Parquet footer, unreadable CSV) or a type-conflicting file is quarantined as a whole (`payload` is null) and the rest of the batch continues;
 - a JSONL line that is not valid JSON, has a field of the wrong type, or (events) lacks a parseable `event_ts` is quarantined with the raw line in `payload`; good lines continue. Malformed events lines cannot be assigned to a date, so they are recorded under every events batch run: dedupe on `(source_file, payload)`.
 
-Only the footer/schema is validated up front for Parquet. **Known gap ([#55](https://github.com/nikshepkulli/claims-lakehouse/issues/55)):** a file that is corrupt only inside a data page passes that check, then fails the whole batch at write time instead of being quarantined; fix the file and re-run the batch.
+### Failure modes
+
+| Failure | Detected | Outcome | `reason` prefix |
+|---|---|---|---|
+| Parquet footer/magic corrupt, unreadable CSV | file open / schema read | file quarantined, rest of batch lands | `unreadable file:` |
+| Column type differs from the bronze table | schema compare | file quarantined | `incompatible column types:` |
+| Parquet footer valid, **a data page corrupt** (#55) | at write time (see below) | file quarantined, rest of batch lands | `CORRUPT_DATA_PAGE:` |
+| Bad JSONL line / missing `event_ts` | per-line parse | line quarantined (raw line in `payload`) | `malformed JSON line...` |
+| Anything else that fails the write (permissions, storage, schema merge) | write | batch fails, table untouched | n/a |
+
+**Data-page corruption, how it is detected.** Reading is lazy, so a page-corrupt file passes the footer check and only fails when the batch write decodes it. A Delta `replaceWhere` overwrite commits nothing when it fails, so the table is untouched. On that failure only, bronze probes each Parquet file of the dataset on its own (a Spark job with the `noop` sink, which decodes every column without writing), quarantines the files that fail, and re-runs the write with the rest. If no file fails the probe, the original error is re-raised (it is not a page problem, so it is not masked). Cost: **zero extra reads on the happy path**; a failing batch pays one failed write plus one probe job per Parquet file of that dataset batch. Measured locally (2000-claim fixture, a 5-row `claims` day with 2 files, one page-corrupt, local[2]): clean batch 6.8 s, batch with a corrupt file 9.4-10.1 s, i.e. about +3 s, dominated by Spark job start-up on such tiny files; not a benchmark at scale. The alternative (probe every file up front) would add a full extra decode pass to every run; `ignoreCorruptFiles` was rejected because it silently drops or half-keeps rows with no accounting.
+
+**Reconciliation.** Per dataset and batch: `source rows = rows_written + quarantined_file_rows + quarantined JSONL lines`. A whole-file quarantine has no decoded rows, so it is accounted at file granularity: `DatasetResult.quarantined_file_rows` (and the quarantine `reason`) carry the row count declared by the file's footer, which is readable even when a page is not. `rows_quarantined` counts quarantine *records* (one per quarantined file or line), not source rows. Footer-corrupt files have no known row count and are counted as a file only.
+
+**Re-runs.** Quarantine rows and data rows are both replaced per `(dataset, batch)`, so re-running a batch with the same corrupt file gives identical tables; once the file is fixed, a re-run lands it and clears its quarantine row.
+
+**Still unhandled.**
+
+- Corruption that still decodes (flipped bits inside a value, or bytes that stay valid under the codec) is not detected: Parquet page CRCs are not verified here.
+- A file corrupt in a way that fails the schema read (before the write) is the old `unreadable file:` path, with no known row count.
+- Only Parquet is probed. A CSV or JSONL file broken mid-file is handled by line-level rules, not by this mechanism.
+- The probe is one Spark job per file, so a batch with thousands of files and a failure pays thousands of small jobs; fine at this scale.
+- Verified locally only (Spark 3.5.9 local, Delta 3.3.3, synthetic data); not run on S3A, ADLS or a cloud cluster.
 
 ## Run
 
@@ -91,6 +113,6 @@ LAKEHOUSE_S3_ENDPOINT=http://minio:9000 MINIO_ROOT_USER=... MINIO_ROOT_PASSWORD=
 
 ## Tests
 
-`tests/bronze/test_bronze_discover.py` (plain pytest, no Spark): paths, file discovery, CLI. `tests/bronze/test_bronze_spark.py` (`-m spark`, one shared SparkSession, 1000-claim fixture, about one minute): metadata columns, all datasets incl. notes and events, snapshot dims, event routing, idempotent re-run and batch isolation, replay of a corrected file plus time travel, schema drift merge + log, quarantine of corrupt files and bad lines, CSV fallback and type-conflict quarantine, no-op on missing batch.
+`tests/bronze/test_bronze_discover.py` (plain pytest, no Spark): paths, file discovery, CLI. `tests/bronze/test_bronze_spark.py` (`-m spark`, one shared SparkSession, 1000-claim fixture, about one minute): metadata columns, all datasets incl. notes and events, snapshot dims, event routing, idempotent re-run and batch isolation, replay of a corrected file plus time travel, schema drift merge + log, quarantine of corrupt files and bad lines, page-corrupt Parquet quarantine with idempotent re-run, CSV fallback and type-conflict quarantine, no-op on missing batch.
 
 CI: `make -f mk/quality.mk test` runs `pytest -m "not spark"`; the separate `spark-tests` job (Temurin 17) runs `pytest -m spark`.
