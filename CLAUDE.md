@@ -14,3 +14,4 @@ Open-source portfolio project by Nikshep Kulli: a multi-cloud lakehouse on synth
 ## Running log
 
 - 2026-11-05: repo created, 32 tickets across 8 milestones filed; scaffold PR for #1.
+- 2026-11-06: #26 point-in-time feature store (src/lakehouse/features, docs/features.md). Gotcha: gold has no adjudication date, so outcome features use an assumed 30-day lag (FeatureConfig); test file basenames must be unique across tests/ (no __init__.py), e.g. tests/governance/test_registry.py already exists.
