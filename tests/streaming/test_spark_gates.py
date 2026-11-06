@@ -53,7 +53,7 @@ def test_warn_measures_every_family_logs_json_and_keeps_processing(spark, lake, 
     )
     warn_all = Threshold(0.0, None)  # any occurrence warns, nothing can fail
     gates = GateConfig(
-        rates={n: warn_all for n in ("contract_failure_rate", "dlq_rate", "late_rate")},
+        rates=dict.fromkeys(("contract_failure_rate", "dlq_rate", "late_rate"), warn_all),
         null_rate={"amount": warn_all},
         watermark_lag_seconds=Threshold(1.0, None),  # synthetic 2024 data: always behind
     )

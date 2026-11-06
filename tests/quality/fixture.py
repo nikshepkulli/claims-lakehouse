@@ -251,9 +251,8 @@ def build_silver(root: Path) -> Path:
         for r in data:
             by[r["_batch_id"]] = by.get(r["_batch_id"], 0) + 1
         counts[name] = by
-    q = {
-        c: "string"
-        for c in (
+    q = dict.fromkeys(
+        (
             "dataset",
             "business_key",
             "reason_code",
@@ -262,8 +261,9 @@ def build_silver(root: Path) -> Path:
             "source_batch",
             "source_file",
             "payload",
-        )
-    }
+        ),
+        "string",
+    )
     q |= {"_ingest_date": "date", "_quarantined_at": "timestamp"}
     put(
         root,

@@ -68,11 +68,19 @@ Naming: `<domain>.<entity>.v<major>`; DLQ is `<topic>.dlq`; subject is `<topic>-
 from lakehouse.streaming.contract import validate_message
 from lakehouse.streaming import dlq
 
-res = validate_message(msg_value)            # never raises; res.ok, res.event, res.errors, res.error_type
+res = validate_message(msg_value)  # never raises; res.ok, res.event, res.errors, res.error_type
 if not res.ok:
-    env = dlq.build_envelope(raw=msg_value, errors=res.errors, error_type=res.error_type,
-                             stage="consumer", source_topic=topic, partition=p, offset=o,
-                             key=key, schema_id=schema_id)
+    env = dlq.build_envelope(
+        raw=msg_value,
+        errors=res.errors,
+        error_type=res.error_type,
+        stage="consumer",
+        source_topic=topic,
+        partition=p,
+        offset=o,
+        key=key,
+        schema_id=schema_id,
+    )
     dlq_topic, value, headers = dlq.to_message(env)
 ```
 

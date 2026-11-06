@@ -68,9 +68,9 @@ Flow of truth: Terraform emits `layer_uris` and `principals` in one shape; a hum
 ```python
 from lakehouse_common import load_location, spark_conf_for
 
-loc = load_location()                      # LAKEHOUSE_ENV=local|aws|azure, base file if unset
+loc = load_location()  # LAKEHOUSE_ENV=local|aws|azure, base file if unset
 path = loc.uri("silver", "claims", {"service_year": 2024})
-conf = spark_conf_for(loc)                 # pass to SparkSession.builder.config(...)
+conf = spark_conf_for(loc)  # pass to SparkSession.builder.config(...)
 ```
 
 Secrets: `spark_conf_for` never returns a credential. It emits either nothing (AWS default credential chain, Azure managed identity) or Hadoop `${env.NAME}` references (`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` for MinIO; `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_SECRET` for a service principal) that Hadoop expands from the process environment at runtime. Tests assert no literal secret appears in any config or output.

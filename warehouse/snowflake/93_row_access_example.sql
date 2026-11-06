@@ -31,8 +31,9 @@ COMMENT = 'Role to state entitlements for rap_state. State code * means all stat
 -- Example entitlements, commented out on purpose; add real ones through a reviewed PR.
 -- INSERT INTO state_entitlement VALUES ('CLAIMS_DEV_ANALYST', 'NY');
 
--- Linter note: sqlfluff 3.3 cannot parse CREATE ROW ACCESS POLICY; suppress parse errors for this statement only.
--- noqa: disable=PRS,LT01,CP02
+-- Linter note: sqlfluff 4.5 parses CREATE ROW ACCESS POLICY now; only the layout and capitalisation rules below are suppressed for this statement.
+-- RF03: row_state is the policy's own argument, it cannot be table-qualified.
+-- noqa: disable=LT01,CP02,RF03
 CREATE ROW ACCESS POLICY IF NOT EXISTS rap_state AS (row_state VARCHAR) RETURNS BOOLEAN ->
 IS_ROLE_IN_SESSION('CLAIMS_DEV_TRANSFORMER')
 OR EXISTS (
@@ -41,7 +42,7 @@ OR EXISTS (
     WHERE IS_ROLE_IN_SESSION(e.role_name) AND e.state_code IN ('*', row_state)
 )
 COMMENT = 'Region access: TRANSFORMER sees all rows, others only entitled states.';
--- noqa: enable=PRS,LT01,CP02
+-- noqa: enable=LT01,CP02,RF03
 
 ALTER TABLE marts.dim_member ADD ROW ACCESS POLICY rap_state ON (state);
 ALTER TABLE marts.dim_provider ADD ROW ACCESS POLICY rap_state ON (state);

@@ -67,7 +67,7 @@ Requires **Enterprise Edition or higher** (tags, masking and row access policies
 6. Optional: `93_row_access_example.sql`, then insert entitlements through a reviewed PR.
 7. Verify as `CLAIMS_DEV_ANALYST`: `SELECT member_id, birth_year, enrollment_date FROM marts.dim_member LIMIT 5;` must show a `tok_<key_id>_<32 hex>` token (the same under every role: the value is stored tokenised), a multiple of 5, and a January 1 date; the same query as `TRANSFORMER` shows the raw birth year and enrollment date. Record the result in #25.
 
-Linter note: sqlfluff 3.3 cannot parse `SYSTEM$GET_TAG_ON_CURRENT_COLUMN` or `CREATE ROW ACCESS POLICY`, so those statements sit inside `-- noqa: disable=` blocks (parse and layout rules only; the rest of each file is linted). Their structure is covered by `tests/governance` instead.
+Linter note: sqlfluff 4.5 parses the masking and row access policies but still wants off-style layout and capitalisation for them (`AS(`, lower-case types), so those statements sit inside `-- noqa: disable=` blocks (layout and capitalisation rules, plus `RF03` for the row access policy, whose `row_state` argument cannot be table-qualified). `ALTER TAG ... SET MASKING POLICY ... FORCE` is valid Snowflake but not parsed by 4.5, so those three statements have a narrow `PRS` suppression. The rest of each file is linted. Their structure is covered by `tests/governance` instead.
 
 ### Known risks for the first live run
 

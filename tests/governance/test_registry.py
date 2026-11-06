@@ -58,7 +58,7 @@ def test_every_dbt_mart_column_is_classified_and_nothing_extra(reg):
 def test_unclassified_column_is_detected_by_the_view_builder(reg):
     """The guard that makes a new column fail loudly rather than pass through unmasked."""
     table = reg["dim_member"]
-    types = {c: "VARCHAR" for c in table.columns} | {"ssn_new_column": "VARCHAR"}
+    types = dict.fromkeys(table.columns, "VARCHAR") | {"ssn_new_column": "VARCHAR"}
     with pytest.raises(KeyError, match="ssn_new_column"):
         views.analyst_view_sql(table, types)
 

@@ -15,9 +15,9 @@
 USE SCHEMA marts;
 
 -- Baseline: how well does natural order cluster on service date?
-SELECT SYSTEM$CLUSTERING_INFORMATION ('fact_claim_line', '(service_date_key)');
-SELECT SYSTEM$CLUSTERING_INFORMATION ('fact_claim', '(service_date_key)');
-SELECT SYSTEM$CLUSTERING_INFORMATION ('fact_claim', '(provider_sk)');
+SELECT SYSTEM$CLUSTERING_INFORMATION('fact_claim_line', '(service_date_key)');
+SELECT SYSTEM$CLUSTERING_INFORMATION('fact_claim', '(service_date_key)');
+SELECT SYSTEM$CLUSTERING_INFORMATION('fact_claim', '(provider_sk)');
 
 -- Only if the baseline shows high average_overlaps / average_depth AND queries
 -- filter on that column, enable a key (this starts billed automatic clustering):
