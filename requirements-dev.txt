@@ -18,3 +18,6 @@ sqlglot==30.29.0
 
 # DuckDB for tests/features (ticket #26) and tests/genai (ticket #28)
 duckdb==2.0.0
+
+# OpenLineage event schema validation in tests/lineage (ticket #24)
+-r requirements-lineage.txt
