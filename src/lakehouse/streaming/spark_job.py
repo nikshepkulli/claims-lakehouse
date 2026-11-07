@@ -10,10 +10,12 @@ Design and guarantees are in docs/streaming-spark.md. In short:
   ``claim_id``, ``dlq_key``, ``(query, batch)``), so replaying a micro-batch changes nothing:
   effectively-once. A restart resumes from the checkpoint with no duplicates and no loss.
 * Dedupe: ``dropDuplicatesWithinWatermark("event_id")`` bounds state; the MERGE is the correctness
-  backstop for duplicates that outlive that state.
-* Late data: Spark's watermark only bounds state here (``dropDuplicatesWithinWatermark`` does not
-  drop late rows). Lateness is classified in ``foreachBatch`` from a per-batch high-water mark that
-  mirrors Spark's rule (watermark = max event time of PREVIOUS batches - delay), so late events are
+  backstop for duplicates that outlive that state. Its watermark runs on ARRIVAL time
+  (``current_timestamp()``), not on ``event_ts``: Spark's operator silently drops rows behind its
+  event-time watermark (one batch after the watermark advances), which lost valid late events
+  before they reached ``foreachBatch`` (ticket #89).
+* Late data: lateness is classified in ``foreachBatch`` from a per-batch high-water mark of
+  EVENT time (late iff event_ts < max event time of PREVIOUS batches - delay), so late events are
   diverted to their own table and counted, never silently dropped.
 """
 
@@ -445,16 +447,21 @@ def silver_plan(spark: SparkSession, cfg: StreamConfig) -> DataFrame:
     ).select(*_OUT_COLS)
     # A replayed dead letter (dlq_replay.py) re-enters bronze with source_file 'dlq-replay:<key>'.
     # Those rows bypass the stateful dedupe like invalid rows do: their event_id can still be in
-    # the dedupe state (e.g. the event was gate-diverted a moment ago) and an event time far behind
-    # the watermark gets filtered by the stateful operator. Measured: replayed events 3 h behind
-    # the watermark vanished before foreachBatch. The MERGE on event_id still stops true
-    # duplicates and foreachBatch still classifies lateness, so nothing is lost silently.
+    # the dedupe state (e.g. the event was gate-diverted a moment ago). The MERGE on event_id still
+    # stops true duplicates and foreachBatch still classifies lateness.
+    #
+    # The dedupe watermark is on ARRIVAL time, not event_ts (ticket #89). On event_ts, Spark's
+    # operator drops every row behind the watermark (from the batch after the watermark advanced),
+    # duplicate or not: valid late events vanished before foreachBatch, uncounted. On arrival time
+    # no row is ever behind the watermark, so only true duplicates inside the window are dropped.
     is_replay = F.coalesce(F.col("source_file").startswith(REPLAY_SOURCE_PREFIX), F.lit(False))
     valid = (
         typed.where(F.col("ok") & ~is_replay)
         .withColumn("value", F.lit(None).cast("binary"))  # payload only needed for dead letters
-        .withWatermark("event_ts", cfg.watermark_delay)
+        .withColumn("_seen_ts", F.current_timestamp())
+        .withWatermark("_seen_ts", cfg.watermark_delay)
         .dropDuplicatesWithinWatermark(["event_id"])
+        .drop("_seen_ts")
     )
     replayed = typed.where(F.col("ok") & is_replay).withColumn("value", F.lit(None).cast("binary"))
     return valid.unionByName(replayed).unionByName(typed.where(~F.col("ok")))
