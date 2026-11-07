@@ -7,6 +7,8 @@ Start with the [README](../README.md) for the overview. Terms are explained in t
 - [README](../README.md): problem, architecture, JD mapping, what is real vs simulated.
 - [Architecture decisions (ADRs)](adr/README.md): why the platform is shaped this way.
 - [Architecture diagram detail](architecture.md): the planned platform with ticket numbers (includes planned parts).
+- [Model card](model-card.md): plain-language description and limits of the claim-denial model.
+- [Dashboard, Pipeline runs tab](dashboard.md#pipeline-runs-ticket-30): lineage graph, run timeline, quality trend.
 - [Glossary](glossary.md)
 
 ## Engineers
@@ -21,6 +23,8 @@ Start with the [README](../README.md) for the overview. Terms are explained in t
 | Data quality (Great Expectations) | [data-quality.md](data-quality.md) |
 | Observability | [observability.md](observability.md) |
 | Features | [features.md](features.md) |
+| ML training and scoring | [ml.md](ml.md), [model-card.md](model-card.md) |
+| Lineage (OpenLineage, Marquez) | [lineage.md](lineage.md) |
 | Governed Q&A (GenAI) | [genai.md](genai.md) |
 | Databricks bundle | [databricks.md](databricks.md) |
 | Dashboard | [dashboard.md](dashboard.md) |
