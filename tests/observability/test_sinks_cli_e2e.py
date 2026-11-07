@@ -239,3 +239,21 @@ def test_end_to_end_fixture(tmp_path, capsys):
         == 0
     )
     assert RUN_SCHEMA.names[0] == "run_id"
+
+
+def test_alerts_file_env_override_moves_the_file_sink(tmp_path, monkeypatch):
+    """Airflow keeps the alert file beside its own ledger root (LAKEHOUSE_ALERTS_FILE)."""
+    ops = tmp_path / "ops"
+    Ledger(ops).append(
+        [
+            RunRecord(**{k: v for k, v in r.items() if k in RunRecord.__dataclass_fields__})
+            for r in history("silver", [1000] * 6)
+        ]
+    )
+    target = tmp_path / "elsewhere" / "alerts.jsonl"
+    monkeypatch.setenv("LAKEHOUSE_ALERTS_FILE", str(target))
+    monkeypatch.chdir(tmp_path)  # default data/ops/alerts.jsonl must NOT be used
+    rc = main(["--ops-root", str(ops), "check", "--now", "2030-01-01T00:00:00+00:00"])
+    assert rc == 1  # stale silver and never-run bronze/gold are critical
+    assert target.exists() and target.read_text().strip()
+    assert not (tmp_path / "data" / "ops" / "alerts.jsonl").exists()

@@ -30,7 +30,7 @@ def _ancestors(tid: str) -> set[str]:
 
 def test_task_order_is_a_chain_raw_to_gates():
     order = ["land_raw", "bronze", "silver", "gold", "dbt_build", "quality_gates"]
-    assert list(TASKS) == order
+    assert list(TASKS) == [*order, "observability_check"]
     for prev, nxt in zip(order, order[1:], strict=False):
         assert TASKS[nxt].upstream == (prev,)
     assert TASKS["land_raw"].upstream == ()
@@ -134,3 +134,63 @@ def test_parse_cli_ignores_guards():
 def test_python_tasks_extend_rather_than_replace_pythonpath():
     for tid in ("land_raw", "bronze", "silver", "gold", "quality_gates"):
         assert "${PYTHONPATH:+:$PYTHONPATH}" in TASKS[tid].command, tid
+
+
+def test_observability_check_hangs_off_gold_and_is_not_retried():
+    t = TASKS["observability_check"]
+    # off gold, not off the gates: a skipped dbt task (dimension-only first date) must not skip it
+    assert t.upstream == ("gold",)
+    assert t.retries == 0
+    mod, flags = parse_cli(t.command)
+    assert mod == "lakehouse.observability" and flags["--fail-on"] == "critical"
+    assert flags["--ops-root"] == str(CFG.ops_root)
+    assert t.env["LAKEHOUSE_ALERTS_FILE"] == str(CFG.ops_root / "alerts.jsonl")
+    assert not t.writes  # writes only the ops root, which is not a layer root
+    assert str(CFG.ops_root) not in LAYER_ROOTS
+
+
+@pytest.mark.parametrize("tid", ["bronze", "silver", "gold"])
+def test_layer_tasks_are_wrapped_by_the_run_ledger(tid):
+    cmd = TASKS[tid].command
+    assert f"wrap --layer {tid} --job {tid}_batch --batch-id '{DS}'" in cmd
+    assert f"--ops-root {CFG.ops_root}" in cmd
+    # the layer job itself is the wrapped child, after the `--` separator
+    assert f" -- python -m lakehouse.{tid} " in cmd
+    # and the wrapper cannot write into a layer root
+    assert str(CFG.ops_root) not in LAYER_ROOTS
+
+
+def test_wrapped_command_runs_end_to_end_and_writes_a_ledger_row(tmp_path):
+    """Render the real bronze command, swap only the layer job for a no-op, run it in bash."""
+    import json
+    import subprocess
+    import sys
+
+    repo = Path(__file__).resolve().parents[2]
+    cfg = PipelineConfig(repo=repo, data_root=tmp_path)
+    (tmp_path / "bronze").mkdir()
+    (tmp_path / "bronze" / "f.bin").write_bytes(b"x" * 10)
+    cmd = build_daily_pipeline(cfg)[1].command.replace("{{ ds }}", "2024-01-05")
+    child = cmd.split(" -- ", 1)[1]
+    assert child.startswith("python -m lakehouse.bronze ")
+    cmd = cmd.replace(child, f'{sys.executable} -c "print(1)"').replace(
+        "python -m lakehouse.observability", f"{sys.executable} -m lakehouse.observability"
+    )
+    done = subprocess.run(["bash", "-c", cmd], cwd=repo, capture_output=True, text=True)  # noqa: S603, S607
+    assert done.returncode == 0, done.stderr
+    runs = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "lakehouse.observability", "--ops-root", str(cfg.ops_root), "runs"],
+        cwd=repo,
+        env={"PYTHONPATH": str(repo / "src"), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    row = json.loads(runs[0])
+    assert (row["layer"], row["job"], row["batch_id"], row["status"]) == (
+        "bronze",
+        "bronze_batch",
+        "2024-01-05",
+        "success",
+    )
+    assert row["bytes_out"] == 10
