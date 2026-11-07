@@ -132,6 +132,39 @@ def test_late_duplicate_of_accepted_event_is_not_reported_late(spark, lake):
     assert table(spark, cfg, Tables.LATE).count() == 0
 
 
+def test_late_events_survive_several_batches_after_the_watermark_advanced(spark, lake):
+    """Regression for #89. Spark's own dropDuplicatesWithinWatermark drops rows behind its
+    event-time watermark from the batch AFTER the advance on, so a never-seen late event in batch
+    3 vanished (no late row, no count) while one in batch 2 survived. All must reach `late`."""
+    inp, tmp = lake
+    write_file(inp, "f1.jsonl", [ev(1, "submitted", 1), ev(2, "submitted", 2)], 1000)
+    write_file(inp, "f2.jsonl", [ev(3, "submitted", 10)], 2000)  # high-water mark -> hour 10
+    write_file(inp, "f3.jsonl", [ev(4, "submitted", 4)], 3000)  # late, one batch after the advance
+    write_file(inp, "f4.jsonl", [ev(5, "submitted", 3), ev(6, "submitted", 4.5)], 4000)  # two later
+    write_file(inp, "f5.jsonl", [ev(7, "submitted", 5)], 5000)
+    cfg = make_cfg(tmp, inp)
+    run_job(spark, cfg)
+
+    assert ids(spark, cfg) == [f"EVT{n:013d}" for n in (1, 2, 3)]
+    assert ids(spark, cfg, Tables.LATE) == [f"EVT{n:013d}" for n in (4, 5, 6, 7)]
+    assert metrics_sum(spark, cfg, "late_count") == 4
+
+
+def test_resent_event_far_behind_the_watermark_is_still_deduped_not_late(spark, lake):
+    """The arrival-time dedupe window still collapses resends of an already-accepted event, even
+    when the resend's event time is far behind the high-water mark (it is a duplicate, not late)."""
+    inp, tmp = lake
+    write_file(inp, "f1.jsonl", [ev(1, "submitted", 3), ev(2, "submitted", 20)], 1000)
+    write_file(inp, "f2.jsonl", [ev(3, "submitted", 3)], 2000)
+    write_file(inp, "f3.jsonl", [ev(1, "submitted", 3), ev(1, "submitted", 3)], 3000)
+    cfg = make_cfg(tmp, inp)
+    run_job(spark, cfg)
+
+    assert ids(spark, cfg) == [f"EVT{n:013d}" for n in (1, 2)]
+    assert ids(spark, cfg, Tables.LATE) == [f"EVT{3:013d}"]
+    assert metrics_sum(spark, cfg, "duplicates_dropped") >= 1
+
+
 def test_invalid_events_go_to_dlq_with_reason_codes(spark, lake):
     inp, tmp = lake
     bad_enum = {**ev(3, "submitted", 1.5), "event_type": "claim_refunded"}
