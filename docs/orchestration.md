@@ -19,18 +19,20 @@ flowchart LR
     silver --> gold["gold<br/>pool claims_spark"]
     gold --> dbt_build["dbt_build<br/>DuckDB on gold export"]
     dbt_build --> quality_gates["quality_gates<br/>no retries"]
+    gold --> obs["observability_check<br/>fails on critical alert"]
 ```
 
 | Task | Runs | Writes only to | Retries | Timeout | SLA (after interval end) |
 |---|---|---|---|---|---|
 | `land_raw` | `python -m claimsgen` if `raw/claims` is missing | `<root>/raw` | 1 | 15 min | 30 min |
-| `bronze` | `python -m lakehouse.bronze --batch-date {{ ds }}` | `<root>/bronze` | 3 | 45 min | 1 h |
-| `silver` | `python -m lakehouse.silver --batch-date {{ ds }}` | `<root>/silver` | 3 | 45 min | 2 h |
-| `gold` | `python -m lakehouse.gold --batch-date {{ ds }}` | `<root>/gold` | 3 | 45 min | 3 h |
+| `bronze` | `python -m lakehouse.bronze --batch-date {{ ds }}`, run under `lakehouse.observability wrap` (ledger row per run) | `<root>/bronze` | 3 | 45 min | 1 h |
+| `silver` | `python -m lakehouse.silver --batch-date {{ ds }}`, wrapped the same way | `<root>/silver` | 3 | 45 min | 2 h |
+| `gold` | `python -m lakehouse.gold --batch-date {{ ds }}`, wrapped the same way | `<root>/gold` | 3 | 45 min | 3 h |
 | `dbt_build` | skipped (exit 99) until gold has a `fact_claim` export, then `dbt deps` + `dbt build --target duckdb` on `<gold>/export` | `<root>/dbt` | 3 | 30 min | 3.5 h |
 | `quality_gates` | `python -m claims_dags.gates` | nothing | 0 | 10 min | 4 h |
+| `observability_check` | `python -m lakehouse.observability check --fail-on critical` after `gold` | `<root>/ops` (ledger, `alerts.jsonl`) | 0 | 5 min | 4 h |
 
-`<root>` is `$CLAIMS_DATA_ROOT` (default `data/airflow`). The task list, retries, timeouts, SLAs, pools
+`<root>` is `$CLAIMS_DATA_ROOT` (default `data/airflow`). The run ledger and alert file are written to `<root>/ops` ([observability.md](observability.md), ticket #23): the wrapper passes the layer job's exit code through, so retries and callbacks are unchanged, and a ledger-write failure never fails a task. `observability_check` hangs off `gold` rather than off `quality_gates`, so a skipped `dbt_build` on the dimension-only first date does not skip it; a critical alert (failed run, stale or never-run bronze/silver/gold) fails the task and fires the failure callback. The task list, retries, timeouts, SLAs, pools
 and write scopes live in one place, `claims_dags/spec.py`; `factory.py` turns it into `BashOperator`s.
 The tasks are plain CLI calls, so swapping `BashOperator` for `DockerOperator` / `KubernetesPodOperator`
 (one image per layer) is a change in `factory.py` only; that variant is not built here.
@@ -162,6 +164,8 @@ is not installed). The `pytest` job in `ci.yml` runs everything except the DagBa
 `airflow dags list-import-errors`.
 
 ## Verification status
+
+**Added after the table below was recorded (ticket #23):** the ledger wrapper and `observability_check` are covered by spec tests, including one that renders the real bronze command and runs it through `bash` with a no-op child (ledger row asserted). They have **not** been run inside Airflow, with Spark, or via `airflow dags test`; the `airflow` CI workflow imports the DAG only. `pyarrow` and `PyYAML` must be importable by the Airflow task environment (the repo requirements already pin both).
 
 Checked on 2026-11-06, synthetic data (2000 claims, seed 42), Airflow 2.10.5 on Python 3.12, Spark 3.5.9 +
 Delta 3.3.3 on Java 17, dbt-core 1.12.6 + dbt-duckdb 1.11.1 (the pinned CI versions).

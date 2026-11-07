@@ -107,6 +107,8 @@ def _wrap(args: argparse.Namespace, ledger: Ledger, log: logging.Logger) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     cfg = load_config(args.config)
+    if os.environ.get("LAKEHOUSE_ALERTS_FILE"):  # keep alerts beside a non-default ledger root
+        cfg["sinks"]["file"]["path"] = os.environ["LAKEHOUSE_ALERTS_FILE"]
     ledger = Ledger(args.ops_root or cfg["ledger_root"])
     log = get_logger(args.log_file or os.environ.get("LAKEHOUSE_LOG_FILE"))
 

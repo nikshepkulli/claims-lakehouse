@@ -31,6 +31,7 @@ CLI_FLAGS: dict[str, dict[str, tuple[str, str]]] = {
     "lakehouse.gold": {"--silver": ("read", "silver"), "--gold": ("write", "gold")},
     "claims_dags.gates": {"--gold": ("read", "gold"), "--raw": ("read", "raw")},
 }
+OBS_MODULE = "lakehouse.observability"  # wraps a layer command and records it in the run ledger
 
 
 def batch_key(ds: str | date) -> str:
@@ -63,6 +64,11 @@ class PipelineConfig:
     def root(self) -> Path:
         return self.data_root or self.repo / "data" / "airflow"
 
+    @property
+    def ops_root(self) -> Path:
+        """Run ledger and alert file live beside the data, never inside a layer root."""
+        return self.root / "ops"
+
     def layer_roots(self) -> dict[str, str]:
         r = self.root
         return {k: str(r / k) for k in ("raw", "bronze", "silver", "gold")}
@@ -89,7 +95,7 @@ class PipelineConfig:
 @dataclass(frozen=True)
 class TaskSpec:
     task_id: str
-    layer: str  # raw | bronze | silver | gold | dbt | gates
+    layer: str  # raw | bronze | silver | gold | dbt | gates | obs
     command: str  # bash, may contain Jinja ({{ ds }})
     upstream: tuple[str, ...]
     execution_timeout: timedelta
@@ -104,6 +110,24 @@ def _py(module: str, *args: str) -> str:
     path = "src:orchestration/airflow" if module.startswith("claims_dags") else "src"
     # keep any PYTHONPATH from the environment (the local container puts its deps there)
     return f"PYTHONPATH={path}${{PYTHONPATH:+:$PYTHONPATH}} python -m {module} " + " ".join(args)
+
+
+def _tracked(cfg: PipelineConfig, layer: str, module: str, *args: str, bytes_path: str) -> str:
+    """``python -m <module> args`` run under ``lakehouse.observability wrap``.
+
+    Success or failure, one ledger row per run lands in ``<root>/ops`` (docs/observability.md).
+    The wrapper passes the child's exit code through, so Airflow retries and failure callbacks
+    behave exactly as without it; a ledger-write failure is logged and never fails the task.
+    """
+    return _py(
+        OBS_MODULE,
+        f"--ops-root {shlex.quote(str(cfg.ops_root))}",
+        f"wrap --layer {layer} --job {layer}_batch --batch-id '{DS}'",
+        f"--bytes-path {shlex.quote(bytes_path)} --",
+        "python -m",
+        module,
+        *args,
+    )
 
 
 def build_daily_pipeline(cfg: PipelineConfig | None = None) -> list[TaskSpec]:
@@ -136,12 +160,15 @@ def build_daily_pipeline(cfg: PipelineConfig | None = None) -> list[TaskSpec]:
         TaskSpec(
             "bronze",
             "bronze",
-            _py(
+            _tracked(
+                cfg,
+                "bronze",
                 "lakehouse.bronze",
                 f"--input {q(roots['raw'])}",
                 f"--bronze {q(roots['bronze'])}",
                 f"--batch-date '{DS}'",
                 f"--datasets {DATASETS}",
+                bytes_path=roots["bronze"],
             ),
             ("land_raw",),
             timedelta(minutes=45),
@@ -153,12 +180,15 @@ def build_daily_pipeline(cfg: PipelineConfig | None = None) -> list[TaskSpec]:
         TaskSpec(
             "silver",
             "silver",
-            _py(
+            _tracked(
+                cfg,
+                "silver",
                 "lakehouse.silver",
                 f"--bronze {q(roots['bronze'])}",
                 f"--silver {q(roots['silver'])}",
                 f"--batch-date '{DS}'",
                 f"--datasets {DATASETS}",
+                bytes_path=roots["silver"],
             ),
             ("bronze",),
             timedelta(minutes=45),
@@ -170,11 +200,14 @@ def build_daily_pipeline(cfg: PipelineConfig | None = None) -> list[TaskSpec]:
         TaskSpec(
             "gold",
             "gold",
-            _py(
+            _tracked(
+                cfg,
+                "gold",
                 "lakehouse.gold",
                 f"--silver {q(roots['silver'])}",
                 f"--gold {q(roots['gold'])}",
                 f"--batch-date '{DS}'",
+                bytes_path=roots["gold"],
             ),
             ("silver",),
             timedelta(minutes=45),
@@ -220,6 +253,24 @@ def build_daily_pipeline(cfg: PipelineConfig | None = None) -> list[TaskSpec]:
             timedelta(hours=4),
             0,
         ),
+        TaskSpec(
+            "observability_check",
+            "obs",
+            # Freshness, volume and failed-run rules over the ledger the three layer tasks wrote
+            # (docs/observability.md). Hangs off gold, not off the gates, so a skipped dbt task
+            # (first date: dimensions only) does not skip the check. Fails the task on a critical
+            # alert, which also fires the DAG's failure callback; deterministic, so no retries.
+            _py(
+                OBS_MODULE,
+                f"--ops-root {q(str(cfg.ops_root))}",
+                "check --fail-on critical",
+            ),
+            ("gold",),
+            timedelta(minutes=5),
+            timedelta(hours=4),
+            0,
+            env={"LAKEHOUSE_ALERTS_FILE": str(cfg.ops_root / "alerts.jsonl")},
+        ),
     ]
 
 
@@ -227,7 +278,13 @@ _SEG_SPLIT = re.compile(r"\s*(?:&&|\|\||;)\s*")
 
 
 def parse_cli(command: str) -> tuple[str, dict[str, str]] | None:
-    """Return ``(module, {flag: value})`` for the ``python -m <module>`` call in ``command``."""
+    """Return ``(module, {flag: value})`` for the ``python -m <module>`` call in ``command``.
+
+    A call wrapped by ``lakehouse.observability wrap ... -- <cmd>`` reports the wrapped command,
+    so write scopes are judged on the layer job and not on the wrapper.
+    """
+    if f"-m {OBS_MODULE} " in command and " wrap " in command and " -- " in command:
+        return parse_cli(command.split(" -- ", 1)[1])
     for seg in _SEG_SPLIT.split(command):
         try:
             toks = shlex.split(seg)

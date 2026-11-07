@@ -5,9 +5,11 @@ Run ledger, JSON-lines logs, freshness/volume alerts. Package: `src/lakehouse/ob
 
 **What ran where.** Everything here was exercised locally on synthetic data (unit tests plus a
 fixture-driven end-to-end test; no Spark, no cloud). Not verified: wiring into the real
-bronze/silver/gold jobs inside Docker/Spark, Airflow (#9) and the dashboard (#29) consuming these
-files (neither was merged when this was written), and a real webhook receiver (tested against a local
-HTTP server only).
+bronze/silver/gold jobs inside Docker/Spark, and a real webhook receiver (tested against a local
+HTTP server only). The Airflow DAG now runs the layer tasks under `wrap` and ends with a `check` task
+([orchestration.md](orchestration.md)); that wiring is spec-tested and a rendered command is run through
+bash with a no-op child, but it has not run inside Airflow or with Spark. The dashboard's pipeline-runs
+view reads the ledger (see [dashboard.md](dashboard.md)).
 
 ## How it fits
 
@@ -122,9 +124,9 @@ routing also fires; `--fail-on never` for log-only.
 | webhook | **off** | generic JSON POST; URL read from the env var named by `url_env` (never stored in config); `min_severity` filter; failures are logged, never raised. Point it at a Slack/PagerDuty-compatible relay of your choice |
 
 Consumers: the dashboard (#29) reads `pipeline_runs` and `alerts.jsonl` by the schemas above;
-Airflow (#9) runs `wrap` around each task and `check` as a final/hourly task, e.g.
+Airflow (#9) runs `wrap` around the bronze, silver and gold tasks and a `check` task after gold (wired, see above), e.g.
 `BashOperator(bash_command="python -m lakehouse.observability check --fail-on critical")`.
-Those two integrations are not built here.
+Set `LAKEHOUSE_ALERTS_FILE` to move the file sink (Airflow keeps it next to its ledger, `<root>/ops/alerts.jsonl`); it overrides `sinks.file.path`.
 
 ## Reconciliation ingest
 
