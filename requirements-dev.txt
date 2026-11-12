@@ -14,7 +14,7 @@ PyYAML==6.0.3
 
 # governed GenAI Q&A (src/lakehouse/genai, ticket #28): tests need the parser; boto3 (Bedrock)
 # is optional and tests inject a stub client. See requirements-genai.txt.
-sqlglot==30.29.0
+sqlglot==30.30.0
 
 # DuckDB for tests/features (ticket #26) and tests/genai (ticket #28)
 duckdb==2.0.0
