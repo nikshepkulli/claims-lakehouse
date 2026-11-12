@@ -3,7 +3,7 @@
 # great-expectations 1.11.x declares support for 3.9-3.13. numpy/pyarrow are pinned by
 # requirements-claimsgen.txt; pandas stays on 2.x (GE 1.11 is validated against it).
 -r requirements-claimsgen.txt
-great-expectations==1.11.3
+great-expectations==1.24.1
 pandas==2.3.3
 deltalake==1.6.6
 PyYAML==6.0.3
