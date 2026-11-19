@@ -47,7 +47,7 @@ jobs:
         run: python -m dashboard.sample --out data/dashboard-sample
       - name: build the dashboard
         run: python -m dashboard.build --gold data/gold --raw data/raw --quality-json data/dq/gold-result.json --out site --lineage-events data/dashboard-sample/lineage/events.jsonl --column-lineage lineage/column_lineage.yaml --runs data/dashboard-sample/ops/pipeline_runs --alerts data/dashboard-sample/ops/alerts.jsonl --quality-history data/dashboard-sample/dq --pipeline-label "sample run from the synthetic fixture"
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
@@ -64,4 +64,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
