@@ -2,5 +2,5 @@
 # claimsgen/quality requirements). jsonschema validates events against the vendored OpenLineage
 # JSON Schemas in tests and behind `--validate`; `referencing` ships with it.
 -r requirements-claimsgen.txt
-PyYAML==6.0.3
+PyYAML==6.0.4
 jsonschema==4.26.0

@@ -2,5 +2,5 @@
 # numpy and pyarrow are pinned by requirements-claimsgen.txt. pandas is NOT needed.
 -r requirements-claimsgen.txt
 scikit-learn==1.9.1
-duckdb==2.0.0
-PyYAML==6.0.3
+duckdb==2.0.1
+PyYAML==6.0.4

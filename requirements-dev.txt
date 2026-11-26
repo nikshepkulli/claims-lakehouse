@@ -4,7 +4,7 @@ sqlfluff==4.5.0
 
 # claimsgen runtime deps (tests import them)
 -r requirements-claimsgen.txt
-PyYAML==6.0.3
+PyYAML==6.0.4
 
 # streaming ingest deps (tests import them)
 -r requirements-streaming.txt
@@ -14,10 +14,10 @@ PyYAML==6.0.3
 
 # governed GenAI Q&A (src/lakehouse/genai, ticket #28): tests need the parser; boto3 (Bedrock)
 # is optional and tests inject a stub client. See requirements-genai.txt.
-sqlglot==30.29.0
+sqlglot==30.33.0
 
 # DuckDB for tests/features (ticket #26) and tests/genai (ticket #28)
-duckdb==2.0.0
+duckdb==2.0.1
 
 # claim-denial-risk model (src/lakehouse/ml, ticket #27): scikit-learn for tests/ml
 -r requirements-ml.txt
