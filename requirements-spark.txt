@@ -1,9 +1,9 @@
 # Spark + Delta test/runtime deps (Spark 3.5.x line; compose image is apache/spark 3.5.5, Java 17)
-pyspark==3.5.9
+pyspark==3.5.10
 delta-spark==3.3.3
 # claimsgen (fixture data) + test runner
 -r requirements-claimsgen.txt
 pytest==8.3.4
 # streaming job validates events with the shared contract helpers (lakehouse.streaming.contract)
 jsonschema==4.26.0
-PyYAML==6.0.3
+PyYAML==6.0.4
